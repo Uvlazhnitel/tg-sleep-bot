@@ -4,19 +4,21 @@ Personal sleep assistant chatbot focused on helping a single user wake up every 
 
 ## Current status
 
-This repository now includes a Phase 1 backend prototype:
+This repository now includes a Phase 2 backend prototype:
 
 - Python 3.13 + FastAPI HTTP service
 - `POST /chat` endpoint backed by the OpenAI Responses API
-- fixed Phase 1 user profile and assistant behavior prompt
-- no persistent memory, no database, no Telegram adapter yet
+- persistent typed memory stored in SQLite
+- fixed user goal plus editable preferences and patterns
+- no Telegram adapter yet
 
 The assistant is designed to be:
 
 - a free-form sleep advice chatbot
 - practical, concise, and non-judgmental
 - science-based and explicitly non-medical
-- ready for later memory and personalization layers
+- transparent and editable in how it uses memory
+- ready for later knowledge cards and deeper personalization layers
 
 ## Project structure
 
@@ -25,6 +27,7 @@ app/
   api/
   core/
   models/
+  repositories/
   services/
 docs/
 tests/
@@ -47,6 +50,8 @@ At minimum, set `OPENAI_API_KEY`.
 ```bash
 export OPENAI_API_KEY="your_api_key_here"
 export OPENAI_MODEL="gpt-4.1-mini"
+export OPENAI_EXTRACTOR_MODEL="gpt-4.1-mini"
+export DATABASE_PATH="sleep_assistant.db"
 ```
 
 You can also copy `.env.example` as a reference:
@@ -103,19 +108,89 @@ Example response:
 }
 ```
 
-## Phase 1 limitations
+### Memory
 
-Phase 1 intentionally does not include:
+List memories:
 
-- persistent long-term memory
-- database storage
+```bash
+curl http://127.0.0.1:8000/memory
+```
+
+Archive a memory:
+
+```bash
+curl -X DELETE http://127.0.0.1:8000/memory/<memory_id>
+```
+
+Update a memory manually:
+
+```bash
+curl -X PATCH http://127.0.0.1:8000/memory/<memory_id> \
+  -H "Content-Type: application/json" \
+  -d '{"content":"User wants to wake up every day at 08:30.","confidence":1.0}'
+```
+
+Create a memory manually:
+
+```bash
+curl -X POST http://127.0.0.1:8000/memory \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type":"worked_before",
+    "content":"Morning light helped the user get out of bed.",
+    "confidence":0.9,
+    "source":"manual"
+  }'
+```
+
+## How memory works
+
+Phase 2 stores only durable, useful information such as:
+
+- fixed goals
+- preferences
+- recurring patterns
+- worked-before strategies
+- did-not-work strategies
+- cautious hypotheses
+
+It does not try to save every message. One-off events like a single late bedtime should usually stay out of long-term memory.
+
+The chat flow is:
+
+1. load relevant saved memories
+2. generate the assistant reply
+3. run a separate memory extraction step
+4. validate the proposed memory updates in backend code
+5. save only accepted updates
+
+The user can also manage memory explicitly:
+
+- ask `What do you remember about me?`
+- say `Forget that I often snooze alarms.`
+- say `Change my wake-up goal to 08:30.`
+
+## Privacy notes
+
+- Memory is stored locally in SQLite at `DATABASE_PATH`
+- The bot stores only a narrow set of sleep-related durable memories
+- The user can list and archive memories through the API
+- Memory extraction is model-assisted, but the model does not write directly to the database
+
+## Phase 2 limitations
+
+Phase 2 intentionally does not include:
+
 - Telegram integration
-- predefined sleep scenario menus
+- vector search or embeddings
+- full scientific knowledge cards yet
 - daily sleep reports or check-ins
-- sleep knowledge cards or retrieval layer
 - authentication or rate limiting
+- perfect memory extraction
 
-Conversation history is client-supplied per request and is only used as a short context window.
+The bot can view and delete memories, but it still does not diagnose or treat medical conditions.
+
+Conversation history is still client-supplied per request and is only used as a short context window.
 
 ## Testing
 
@@ -131,6 +206,9 @@ Manual smoke scenarios to try:
 - tonight planning question
 - snoozing-alarm question
 - repeated early waking question
+- morning light helped before and becomes `worked_before`
+- many alarms did not help and becomes `did_not_work`
+- one-off late bedtime gets ignored as memory
 - red-flag symptoms that should trigger professional-help language
 
 ## Documents

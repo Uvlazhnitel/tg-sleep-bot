@@ -6,7 +6,10 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes import router
 from app.core.config import get_settings
-from app.core.exceptions import MissingConfigurationError, UpstreamServiceError
+from app.core.database import initialize_database
+from app.core.exceptions import MemoryNotFoundError, MissingConfigurationError, UpstreamServiceError
+from app.repositories.memory_repository import MemoryRepository
+from app.services.memory_service import MemoryService
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -14,7 +17,13 @@ logging.basicConfig(level=logging.INFO)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    get_settings().require_openai_api_key()
+    settings = get_settings()
+    settings.require_openai_api_key()
+    initialize_database(settings.database_path)
+    MemoryService(
+        repository=MemoryRepository(settings.database_path),
+        user_id=settings.default_user_id,
+    ).ensure_seed_memories()
     yield
 
 
@@ -41,6 +50,13 @@ def create_app() -> FastAPI:
             status_code=502,
             content={"detail": "Upstream model request failed."},
         )
+
+    @app.exception_handler(MemoryNotFoundError)
+    async def handle_memory_not_found(
+        request: Request, exc: MemoryNotFoundError
+    ) -> JSONResponse:
+        logger.warning("Memory not found for %s: %s", request.url.path, exc)
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(
