@@ -25,7 +25,7 @@ class KnowledgeCard(BaseModel):
     @classmethod
     def validate_non_empty(cls, value: str) -> str:
         cleaned = value.strip()
-        if not cleaned:
+        if not cleaned and value != "":
             raise ValueError("Knowledge card text fields must not be empty.")
         return cleaned
 

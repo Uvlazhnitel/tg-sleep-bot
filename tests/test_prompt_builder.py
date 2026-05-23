@@ -1,5 +1,5 @@
 from app.models.knowledge import KnowledgeCard
-from app.models.memory import MemoryRecord
+from app.models.safety import SafetyClassification, SafetyRedFlag
 from app.services.prompt_builder import build_assistant_instructions
 
 
@@ -31,6 +31,19 @@ def test_prompt_includes_fixed_profile_and_safety_rules():
                 active=True,
             )
         ],
+        SafetyClassification(
+            category="C",
+            red_flags=[
+                SafetyRedFlag(
+                    type="possible_sleep_apnea",
+                    evidence="User mentioned waking up gasping.",
+                    severity="medical_red_flag",
+                )
+            ],
+            should_recommend_professional_help=True,
+            should_prioritize_immediate_safety=False,
+            assistant_guidance="Recommend professional evaluation and avoid diagnosis.",
+        ),
     )
 
     assert "09:00" in instructions
@@ -43,3 +56,6 @@ def test_prompt_includes_fixed_profile_and_safety_rules():
     assert "stable_wake_time" in instructions
     assert "do not quote or expose source urls" in instructions.lower()
     assert "recommend professional help" in instructions
+    assert "Safety Classification" in instructions
+    assert "possible_sleep_apnea" in instructions
+    assert "never recommend alcohol as a sleep aid" in instructions.lower()

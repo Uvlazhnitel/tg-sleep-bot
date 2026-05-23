@@ -9,6 +9,7 @@ from app.repositories.memory_repository import MemoryRepository
 from app.services.chat_service import ChatService
 from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
+from app.services.safety_classifier import SafetyClassifierService
 
 
 class StubOpenAIService:
@@ -25,6 +26,7 @@ class StubOpenAIService:
         self.last_memories = []
         self.last_knowledge_cards = []
         self.last_personalization_context = ""
+        self.last_safety_classification = None
 
     def generate_assistant_reply(
         self,
@@ -33,10 +35,12 @@ class StubOpenAIService:
         relevant_memories,
         relevant_knowledge_cards,
         personalization_context,
+        safety_classification,
     ):
         self.last_memories = relevant_memories
         self.last_knowledge_cards = relevant_knowledge_cards
         self.last_personalization_context = personalization_context
+        self.last_safety_classification = safety_classification
         return self.reply
 
     def extract_memory_updates(self, user_message, assistant_reply, relevant_memories):
@@ -71,6 +75,7 @@ def build_chat_service(tmp_path, openai_service, *, debug_metadata_allowed=False
         memory_service=memory_service,
         knowledge_service=KnowledgeService("app/data/knowledge_cards.json"),
         openai_service=openai_service,
+        safety_classifier=SafetyClassifierService(),
         debug_metadata_allowed=debug_metadata_allowed,
     )
 
@@ -303,6 +308,8 @@ def test_dev_chat_response_can_include_debug_metadata(monkeypatch, tmp_path):
     assert response.json()["debug"]["memory_ids"]
     assert response.json()["debug"]["knowledge_card_ids"]
     assert "User goal:" in response.json()["debug"]["personalization_context"]
+    assert response.json()["debug"]["safety_category"] == "A"
+    assert response.json()["debug"]["should_prioritize_immediate_safety"] is False
 
 
 def test_production_chat_response_suppresses_debug_metadata(monkeypatch, tmp_path):
@@ -321,3 +328,227 @@ def test_production_chat_response_suppresses_debug_metadata(monkeypatch, tmp_pat
 
     assert response.status_code == 200
     assert "debug" not in response.json()
+
+
+def test_normal_late_bedtime_is_category_a(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService("Keep 09:00 tomorrow.")
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "I went to bed late yesterday. What should I do?"},
+        )
+
+    assert response.status_code == 200
+    assert openai_service.last_safety_classification.category == "A"
+
+
+def test_a_few_bad_nights_is_category_b(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService("We can keep this simple today.")
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "I have been sleeping badly for a few days."},
+        )
+
+    assert response.status_code == 200
+    assert openai_service.last_safety_classification.category == "B"
+
+
+def test_wake_up_gasping_is_category_c(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "I cannot diagnose this, but waking up gasping is worth discussing with a healthcare professional."
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "I wake up gasping at night."})
+
+    assert response.status_code == 200
+    assert openai_service.last_safety_classification.category == "C"
+    assert "healthcare professional" in response.json()["reply"]
+
+
+def test_partner_says_stop_breathing_is_category_c(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "I cannot diagnose this, but possible breathing pauses during sleep are worth discussing with a healthcare professional."
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "My partner says I stop breathing in my sleep."},
+        )
+
+    assert response.status_code == 200
+    assert openai_service.last_safety_classification.category == "C"
+
+
+def test_insomnia_for_four_weeks_is_category_c(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "I cannot diagnose this, but insomnia lasting weeks is something to discuss with a healthcare professional."
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "I have had insomnia for 4 weeks."},
+        )
+
+    assert response.status_code == 200
+    assert openai_service.last_safety_classification.category == "C"
+
+
+def test_dangerous_sleepiness_while_driving_is_category_d(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "This sounds like an immediate safety issue. Do not drive while this sleepy. Please contact local emergency services or urgent support now."
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "I almost fell asleep while driving."},
+        )
+
+    assert response.status_code == 200
+    assert openai_service.last_safety_classification.category == "D"
+    assert "09:00" not in response.json()["reply"]
+
+
+def test_self_harm_language_is_category_d(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "This sounds like an immediate safety issue. Please contact local emergency services or a crisis support line now."
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "I feel hopeless and I do not want to live."},
+        )
+
+    assert response.status_code == 200
+    assert openai_service.last_safety_classification.category == "D"
+
+
+def test_medication_dosage_question_does_not_get_dosage_advice(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "I cannot recommend medication doses. Medication effects on sleep can vary, so it is best to discuss this with a clinician or pharmacist."
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "What melatonin dose should I take for sleep?"},
+        )
+
+    assert response.status_code == 200
+    assert "dose" in response.json()["reply"].lower()
+    assert "clinician or pharmacist" in response.json()["reply"].lower()
+    assert "mg" not in response.json()["reply"].lower()
+
+
+def test_alcohol_as_sleep_aid_is_not_recommended(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "I would not use alcohol as a sleep aid. If you are relying on it to sleep, it would be worth discussing that with a healthcare professional."
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "Should I use alcohol to fall asleep tonight?"},
+        )
+
+    assert response.status_code == 200
+    assert "would not use alcohol as a sleep aid" in response.json()["reply"].lower()
+
+
+def test_safety_category_overrides_personalization(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Even if a longer nap feels helpful short term, waking up gasping is something worth discussing with a healthcare professional."
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    chat_service.memory_service.create_memory(
+        MemoryCreateRequest(
+            type="worked_before",
+            content="Long naps helped the user recover after poor sleep.",
+            confidence=0.9,
+            source="manual",
+            positive_count=2,
+        )
+    )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "I wake up gasping and want the quickest fix for tomorrow."},
+        )
+
+    assert response.status_code == 200
+    assert openai_service.last_safety_classification.category == "C"
+    assert "healthcare professional" in response.json()["reply"]
+
+
+def test_assistant_does_not_expose_raw_classifier_json(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "I cannot diagnose this, but this is worth discussing with a healthcare professional."
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "I wake up gasping."})
+
+    assert response.status_code == 200
+    assert "assistant_guidance" not in response.json()["reply"]
+    assert "red_flags" not in response.json()["reply"]
+
+
+def test_sensitive_crisis_details_are_not_saved_as_memory(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "This sounds like an immediate safety issue. Please contact local emergency services or a crisis support line now.",
+        extraction=MemoryExtractionResult(
+            memory_updates=[
+                {
+                    "action": "create",
+                    "type": "pattern",
+                    "content": "User wants to die after poor sleep.",
+                    "confidence": 0.8,
+                    "reason": "Sensitive crisis detail that should not persist.",
+                }
+            ],
+            ignored=[],
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "I want to die and I cannot keep going."},
+        )
+
+    assert response.status_code == 200
+    assert all(
+        "want to die" not in memory.content.lower()
+        for memory in chat_service.memory_service.list_memories(include_archived=True)
+    )

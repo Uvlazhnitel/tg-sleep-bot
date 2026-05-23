@@ -6,6 +6,7 @@ from app.models.chat import ChatDebugMetadata, ChatResponse, HistoryMessage
 from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
 from app.services.openai_client import OpenAIResponseService
+from app.services.safety_classifier import SafetyClassifierService
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +17,13 @@ class ChatService:
         memory_service: MemoryService,
         knowledge_service: KnowledgeService,
         openai_service: OpenAIResponseService,
+        safety_classifier: SafetyClassifierService,
         debug_metadata_allowed: bool = False,
     ) -> None:
         self.memory_service = memory_service
         self.knowledge_service = knowledge_service
         self.openai_service = openai_service
+        self.safety_classifier = safety_classifier
         self.debug_metadata_allowed = debug_metadata_allowed
 
     def generate_reply(
@@ -38,10 +41,16 @@ class ChatService:
             return ChatResponse(reply=feedback_reply)
 
         relevant_memories = self.memory_service.get_relevant_memories(message)
+        safety_classification = self.safety_classifier.classify(
+            message,
+            history,
+            relevant_memories,
+        )
         personalization_context = self.memory_service.get_personalization_context(message)
         relevant_knowledge_cards = self.knowledge_service.get_relevant_knowledge_cards(
             message,
             relevant_memories,
+            safety_red_flag_types=[flag.type for flag in safety_classification.red_flags],
         )
         reply = self.openai_service.generate_assistant_reply(
             message=message,
@@ -49,19 +58,25 @@ class ChatService:
             relevant_memories=relevant_memories,
             relevant_knowledge_cards=relevant_knowledge_cards,
             personalization_context=personalization_context,
+            safety_classification=safety_classification,
         )
         self.memory_service.mark_memories_used(relevant_memories)
 
-        try:
-            extraction = self.openai_service.extract_memory_updates(
-                user_message=message,
-                assistant_reply=reply,
-                relevant_memories=relevant_memories,
-            )
-            validated = self.memory_service.validate_extraction_result(extraction)
-            self.memory_service.apply_memory_updates(validated)
-        except UpstreamServiceError as exc:
-            logger.warning("Memory extraction skipped: %s", exc)
+        if safety_classification.category != "D":
+            try:
+                extraction = self.openai_service.extract_memory_updates(
+                    user_message=message,
+                    assistant_reply=reply,
+                    relevant_memories=relevant_memories,
+                )
+                extraction = self.memory_service.restrict_extraction_for_safety(
+                    extraction,
+                    safety_classification,
+                )
+                validated = self.memory_service.validate_extraction_result(extraction)
+                self.memory_service.apply_memory_updates(validated)
+            except UpstreamServiceError as exc:
+                logger.warning("Memory extraction skipped: %s", exc)
 
         debug = None
         if include_debug and self.debug_metadata_allowed:
@@ -69,6 +84,11 @@ class ChatService:
                 memory_ids=[memory.id for memory in relevant_memories],
                 knowledge_card_ids=[card.id for card in relevant_knowledge_cards],
                 personalization_context=personalization_context,
+                safety_category=safety_classification.category,
+                safety_red_flag_types=[
+                    flag.type for flag in safety_classification.red_flags
+                ],
+                should_prioritize_immediate_safety=safety_classification.should_prioritize_immediate_safety,
             )
 
         return ChatResponse(reply=reply, debug=debug)

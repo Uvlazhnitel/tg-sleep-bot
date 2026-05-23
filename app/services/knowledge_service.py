@@ -28,6 +28,16 @@ FALLBACK_TOPICS = (
     "adult_sleep_duration",
 )
 
+SAFETY_TOPIC_MAP = {
+    "possible_sleep_apnea": "possible_sleep_apnea_red_flags",
+    "severe_daytime_sleepiness": "severe_daytime_sleepiness",
+    "persistent_insomnia": "persistent_insomnia",
+    "substance_sleep_dependence": "alcohol_or_sedative_dependence",
+    "dangerous_sleepiness_driving": "dangerous_sleepiness_driving",
+    "self_harm_or_suicide": "self_harm_or_crisis",
+    "medication_sleep_concern": "medication_sleep_concerns",
+}
+
 
 def tokenize(value: str) -> set[str]:
     return set(re.findall(r"[a-z0-9_]+", value.lower()))
@@ -51,6 +61,7 @@ class KnowledgeService:
         self,
         message: str,
         memories: list[MemoryRecord],
+        safety_red_flag_types: list[str] | None = None,
     ) -> list[KnowledgeCard]:
         active_cards = self.list_knowledge_cards()
         message_tokens = tokenize(message)
@@ -73,6 +84,15 @@ class KnowledgeService:
             )
             if red_flag_card and all(card.id != red_flag_card.id for card in selected):
                 selected.insert(0, red_flag_card)
+                selected = selected[:6]
+
+        for red_flag_type in safety_red_flag_types or []:
+            topic = SAFETY_TOPIC_MAP.get(red_flag_type)
+            if topic is None:
+                continue
+            card = self.get_knowledge_card_by_topic(topic)
+            if card and all(existing.id != card.id for existing in selected):
+                selected.insert(0, card)
                 selected = selected[:6]
 
         if len(selected) < 3:

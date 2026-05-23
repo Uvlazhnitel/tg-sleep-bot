@@ -14,6 +14,7 @@ from app.services.chat_service import ChatService
 from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
 from app.services.openai_client import OpenAIResponseService
+from app.services.safety_classifier import SafetyClassifierService
 
 router = APIRouter()
 
@@ -38,6 +39,7 @@ def get_chat_service(
         memory_service=memory_service,
         knowledge_service=knowledge_service,
         openai_service=OpenAIResponseService(settings),
+        safety_classifier=SafetyClassifierService(),
         debug_metadata_allowed=settings.debug_metadata_allowed,
     )
 

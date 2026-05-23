@@ -27,7 +27,7 @@ def test_knowledge_cards_load_from_json():
     service = KnowledgeService("app/data/knowledge_cards.json")
     cards = service.list_knowledge_cards()
 
-    assert len(cards) >= 15
+    assert len(cards) >= 22
     assert any(card.topic == "stable_wake_time" for card in cards)
 
 
@@ -60,9 +60,11 @@ def test_red_flag_card_is_retrieved_for_concerning_message():
     cards = service.get_relevant_knowledge_cards(
         "I have severe daytime sleepiness and loud snoring with breathing pauses.",
         [],
+        safety_red_flag_types=["possible_sleep_apnea", "severe_daytime_sleepiness"],
     )
 
     assert any(card.topic == "when_to_seek_professional_help" for card in cards)
+    assert any(card.topic == "possible_sleep_apnea_red_flags" for card in cards)
 
 
 def test_invalid_knowledge_card_shape_fails_validation(tmp_path):

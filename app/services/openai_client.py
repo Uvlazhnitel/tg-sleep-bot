@@ -8,6 +8,7 @@ from app.models.chat import HistoryMessage
 from app.models.extractor import MemoryExtractionResult
 from app.models.knowledge import KnowledgeCard
 from app.models.memory import MemoryRecord
+from app.models.safety import SafetyClassification
 from app.services.prompt_builder import (
     build_assistant_instructions,
     build_memory_extractor_input,
@@ -29,10 +30,12 @@ class OpenAIResponseService:
         relevant_memories: list[MemoryRecord],
         relevant_knowledge_cards: list[KnowledgeCard],
         personalization_context: str,
+        safety_classification: SafetyClassification,
     ) -> str:
         instructions = build_assistant_instructions(
             personalization_context,
             relevant_knowledge_cards,
+            safety_classification,
         )
         input_items = build_phase1_input(message=message, history=history)
 

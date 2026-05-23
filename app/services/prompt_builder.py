@@ -1,6 +1,7 @@
 from app.models.chat import HistoryMessage
 from app.models.knowledge import KnowledgeCard
 from app.models.memory import MemoryRecord
+from app.models.safety import SafetyClassification
 
 PHASE_1_PROFILE = """
 Wake-up goal: the user wants to wake up every day at 09:00.
@@ -48,6 +49,7 @@ def build_phase1_instructions() -> str:
 def build_assistant_instructions(
     personalization_context: str,
     relevant_knowledge_cards: list[KnowledgeCard],
+    safety_classification: SafetyClassification,
 ) -> str:
     knowledge_block = format_knowledge_cards_for_prompt(relevant_knowledge_cards)
     dynamic_rules = """
@@ -61,6 +63,15 @@ Avoid repeating advice that did not work before unless there is a clear reason.
 If memory conflicts with safety or knowledge-card guidance, prioritize safety first, then knowledge, then preference.
 If useful, mention previous user context briefly without sounding invasive.
 Never ask for daily reports.
+""".strip()
+    safety_rules = """
+Safety comes before personalization and wake-time optimization.
+Never diagnose medical or mental health conditions.
+Never recommend starting, stopping, or changing prescription medications, sedatives, stimulants, supplements, melatonin, or dosages.
+If the user asks about medication effects or dosages, redirect them to a qualified clinician or pharmacist in general terms.
+Never recommend alcohol as a sleep aid.
+If the user may be dangerously sleepy and needs to drive or operate machinery, advise not doing so and choosing a safer option.
+For urgent safety risk, focus on immediate safety and do not optimize wake timing.
 """.strip()
     knowledge_rules = """
 Use the knowledge cards as grounding for practical sleep advice.
@@ -84,6 +95,10 @@ Keep recommendations aligned with protecting or gradually restoring a stable tar
         "Wake Goal Framing": wake_goal_framing,
         "Personalization Usage Rules": dynamic_rules,
         "Personalization Context": personalization_context,
+        "Safety Classification": format_safety_classification_for_prompt(
+            safety_classification
+        ),
+        "Safety Rules": safety_rules,
         "Knowledge Card Usage Rules": knowledge_rules,
         "Relevant Knowledge Cards": knowledge_block,
         "Safety Boundaries": (
@@ -177,3 +192,26 @@ def format_knowledge_cards_for_prompt(cards: list[KnowledgeCard]) -> str:
             )
         )
     return "\n\n".join(sections)
+
+
+def format_safety_classification_for_prompt(
+    safety_classification: SafetyClassification,
+) -> str:
+    red_flags = (
+        "\n".join(
+            f"- {flag.type}: {flag.evidence} ({flag.severity})"
+            for flag in safety_classification.red_flags
+        )
+        if safety_classification.red_flags
+        else "None"
+    )
+    return "\n".join(
+        [
+            f"Category: {safety_classification.category}",
+            f"Should recommend professional help: {safety_classification.should_recommend_professional_help}",
+            f"Should prioritize immediate safety: {safety_classification.should_prioritize_immediate_safety}",
+            f"Assistant guidance: {safety_classification.assistant_guidance}",
+            "Red flags:",
+            red_flags,
+        ]
+    )

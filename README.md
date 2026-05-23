@@ -4,13 +4,14 @@ Personal sleep assistant chatbot focused on helping a single user wake up every 
 
 ## Current status
 
-This repository now includes a Phase 4 backend prototype:
+This repository now includes a Phase 5 backend prototype:
 
 - Python 3.13 + FastAPI HTTP service
 - `POST /chat` endpoint backed by the OpenAI Responses API
 - persistent typed memory stored in SQLite
 - curated local knowledge cards for practical sleep guidance
 - lightweight personalization that adapts to what helped or did not help
+- deterministic safety layer for red flags, medical boundaries, and crisis routing
 - fixed user goal plus editable preferences and patterns
 - no Telegram adapter yet
 
@@ -22,6 +23,7 @@ The assistant is designed to be:
 - transparent and editable in how it uses memory
 - grounded by a small curated sleep knowledge base
 - personalized without requiring daily reports
+- safety-first when red flags are present
 - ready for later deeper analytics or integrations
 
 ## Project structure
@@ -213,6 +215,13 @@ The user can also manage memory explicitly:
 - say `Actually, that's wrong.`
 - say `Remember that I usually need a slow morning.`
 
+Phase 5 adds a safety-aware memory filter:
+
+- crisis details are not stored as ordinary long-term memory
+- diagnosis-like memories are rejected
+- sensitive medical specifics are blocked unless rewritten into a neutral guardrail-style memory
+- Category D urgent-risk chats skip normal memory extraction entirely
+
 ## How personalization works
 
 Phase 4 does not track every day or require reports. Instead, it personalizes advice by combining:
@@ -239,6 +248,40 @@ Examples of feedback the bot can use:
 - `Remember that I usually need a slow morning.`
 
 The assistant uses a compact personalization context instead of dumping all memories into the prompt.
+
+## Safety layer
+
+Phase 5 adds a deterministic backend safety classifier before reply generation. It looks at the current message, recent context, and relevant memories, then assigns one of four categories:
+
+- `A`: normal sleep routine issue
+- `B`: mild concern that may need monitoring if it continues
+- `C`: medical red flag worth discussing with a qualified healthcare professional
+- `D`: urgent safety risk that should trigger immediate support guidance
+
+Examples of red flags the classifier looks for:
+
+- sleep difficulty lasting multiple weeks
+- severe daytime sleepiness that affects driving, work, or daily functioning
+- loud snoring, gasping, choking, or possible breathing pauses
+- panic-like awakenings
+- major mood changes, hopelessness, or severe anxiety
+- thoughts of self-harm or suicide
+- relying on alcohol, sedatives, stimulants, or sleeping pills to sleep or wake
+- medication-related sleep problems
+- unusual dangerous sleep behaviors
+
+Safety rules for the assistant:
+
+- it can give general sleep hygiene and routine advice
+- it does not diagnose medical or psychiatric conditions
+- it does not recommend prescription medication changes, sedatives, stimulants, supplements, or dosages
+- it does not recommend alcohol as a sleep aid
+- it recommends professional help for Category C concerns
+- it prioritizes immediate safety over the 09:00 wake-up goal for Category D
+
+If the user mentions dangerous sleepiness while driving or operating machinery, the assistant should advise not driving while sleepy and choosing a safer option.
+
+This safety layer is a support tool, not a diagnosis tool or emergency service.
 
 ## What knowledge cards are
 
@@ -281,6 +324,17 @@ Acceptable source families for this phase:
 - National Sleep Foundation
 - Sleep Foundation
 
+Phase 5 also adds safety-oriented cards such as:
+
+- `when_to_seek_professional_help`
+- `possible_sleep_apnea_red_flags`
+- `severe_daytime_sleepiness`
+- `persistent_insomnia`
+- `alcohol_or_sedative_dependence`
+- `dangerous_sleepiness_driving`
+- `self_harm_or_crisis`
+- `medication_sleep_concerns`
+
 ## Privacy notes
 
 - Memory is stored locally in SQLite at `DATABASE_PATH`
@@ -289,10 +343,20 @@ Acceptable source families for this phase:
 - The user can edit memories and give explicit memory feedback through the API
 - Memory extraction is model-assisted, but the model does not write directly to the database
 - Knowledge cards are static curated application content stored locally in the repository
+- Sensitive crisis and diagnosis-like details are filtered and not stored as casual long-term memory
 
-## Phase 4 limitations
+## Medical boundary
 
-Phase 4 intentionally does not include:
+This bot is an informational sleep assistant, not a doctor. It can help with practical decisions about schedule, naps, caffeine, light, and routine, but it cannot:
+
+- diagnose insomnia, sleep apnea, depression, anxiety disorders, mania, or substance dependence
+- prescribe treatment
+- recommend medication doses or medication changes
+- manage emergencies beyond directing the user to immediate help
+
+## Phase 5 limitations
+
+Phase 5 intentionally does not include:
 
 - Telegram integration
 - vector search or embeddings
@@ -304,7 +368,7 @@ Phase 4 intentionally does not include:
 - advanced analytics dashboards
 - wearable integrations
 
-Pattern detection is still simple and may be imperfect. Low-confidence memories are treated as hypotheses, and the user can correct or delete memories at any time.
+The safety classifier is not a medical diagnosis tool. It may miss subtle red flags, and it may sometimes be cautious. Crisis and medical resource localization is still generic and should be improved later. Pattern detection is still simple and may be imperfect. Low-confidence memories are treated as hypotheses, and the user can correct or delete memories at any time.
 
 Conversation history is still client-supplied per request and is only used as a short context window.
 
@@ -328,6 +392,11 @@ Manual smoke scenarios to try:
 - many alarms did not help and becomes `did_not_work`
 - one-off late bedtime gets ignored as memory
 - red-flag symptoms that should trigger professional-help language
+- waking up gasping or being told you stop breathing
+- almost falling asleep while driving
+- asking about medication dosage for sleep
+- saying alcohol helps with sleep
+- self-harm or crisis language that should prioritize immediate safety
 
 ## Documents
 

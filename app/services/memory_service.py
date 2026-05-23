@@ -12,6 +12,7 @@ from app.models.memory import (
     MemoryType,
     MemoryUpdateRequest,
 )
+from app.models.safety import SafetyClassification
 from app.repositories.memory_repository import MemoryRepository
 from app.services.personalization_service import PersonalizationService
 
@@ -208,6 +209,15 @@ class MemoryService:
                 )
                 continue
 
+            if self._looks_too_sensitive(proposal.content):
+                ignored.append(
+                    {
+                        "content": proposal.content,
+                        "reason": "Sensitive crisis or medical details should not be stored as ordinary memory.",
+                    }
+                )
+                continue
+
             if proposal.action in {"update", "archive"} and proposal.target_memory_id not in current_ids:
                 ignored.append(
                     {
@@ -290,6 +300,43 @@ class MemoryService:
     def record_intervention_feedback(self, intervention: str, result: str) -> MemoryRecord:
         return self.personalization.record_intervention_result(intervention, result)
 
+    def restrict_extraction_for_safety(
+        self,
+        extraction: MemoryExtractionResult,
+        safety: SafetyClassification,
+    ) -> MemoryExtractionResult:
+        if safety.category == "D":
+            return MemoryExtractionResult(memory_updates=[], ignored=extraction.ignored)
+
+        if safety.category != "C":
+            return extraction
+
+        allowed_updates: list[MemoryUpdateProposal] = []
+        ignored = list(extraction.ignored)
+        for proposal in extraction.memory_updates:
+            if proposal.action == "none":
+                allowed_updates.append(proposal)
+                continue
+            if proposal.content is None:
+                continue
+            if self._looks_diagnostic(proposal.content) or self._looks_too_sensitive(
+                proposal.content
+            ):
+                ignored.append(
+                    {
+                        "content": proposal.content,
+                        "reason": "Restricted due to medical red flag context.",
+                    }
+                )
+                continue
+            if (
+                "breathing-related sleep concerns" in proposal.content.lower()
+                or "avoid treating this as a routine sleep hygiene issue"
+                in proposal.content.lower()
+            ):
+                allowed_updates.append(proposal)
+        return MemoryExtractionResult(memory_updates=allowed_updates, ignored=ignored)
+
     @staticmethod
     def _looks_temporary(content: str) -> bool:
         lowered = content.lower()
@@ -304,5 +351,24 @@ class MemoryService:
             "diagnosed",
             "depression",
             "anxiety disorder",
+        )
+        return any(term in lowered for term in blocked_terms)
+
+    @staticmethod
+    def _looks_too_sensitive(content: str) -> bool:
+        lowered = content.lower()
+        blocked_terms = (
+            "hurt myself",
+            "kill myself",
+            "want to die",
+            "suicide",
+            "suicidal",
+            "hopeless",
+            "stop breathing",
+            "stops breathing",
+            "breathing pauses",
+            "gasping",
+            "wake up choking",
+            "dangerously sleepy while driving",
         )
         return any(term in lowered for term in blocked_terms)
