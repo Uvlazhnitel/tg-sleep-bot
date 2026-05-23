@@ -21,6 +21,7 @@ def build_reply_callback():
             message=message,
             history=history,
             session_id=session_id,
+            response_language="Russian",
         )
         return response.reply
 

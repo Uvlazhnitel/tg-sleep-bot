@@ -52,6 +52,7 @@ class ChatService:
         history: list[HistoryMessage],
         session_id: str | None = None,
         include_debug: bool = False,
+        response_language: str | None = None,
     ) -> ChatResponse:
         session_key = self.memory_transparency_service.normalize_session_id(session_id)
         settings = self.settings_service.ensure_feature_defaults()
@@ -117,6 +118,7 @@ class ChatService:
             safety_classification=safety_classification,
             feature_context=feature_context,
             voice_mode=settings.voice_mode,
+            response_language=response_language,
         )
         self.memory_service.mark_memories_used(relevant_memories)
         self.memory_transparency_service.store_advice_trace(

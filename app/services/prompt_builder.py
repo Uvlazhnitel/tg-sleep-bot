@@ -54,6 +54,7 @@ def build_assistant_instructions(
     safety_classification: SafetyClassification,
     feature_context: str = "",
     voice_mode: bool = False,
+    response_language: str | None = None,
 ) -> str:
     knowledge_block = format_knowledge_cards_for_prompt(relevant_knowledge_cards)
     dynamic_rules = """
@@ -125,6 +126,11 @@ Keep recommendations aligned with protecting or gradually restoring a stable tar
             "or claim certainty where general sleep advice is more appropriate."
         ),
     }
+    if response_language:
+        sections["Response Language"] = (
+            f"Always answer in {response_language}. "
+            "Do this even if the user writes in multiple languages."
+        )
     if voice_mode:
         sections["Voice Mode"] = voice_rules
     return "\n\n".join(f"{name}:\n{content}" for name, content in sections.items())

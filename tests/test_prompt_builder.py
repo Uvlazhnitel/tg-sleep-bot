@@ -59,3 +59,21 @@ def test_prompt_includes_fixed_profile_and_safety_rules():
     assert "Safety Classification" in instructions
     assert "possible_sleep_apnea" in instructions
     assert "never recommend alcohol as a sleep aid" in instructions.lower()
+
+
+def test_prompt_can_force_response_language():
+    instructions = build_assistant_instructions(
+        personalization_context="User wants concise advice.",
+        relevant_knowledge_cards=[],
+        safety_classification=SafetyClassification(
+            category="A",
+            red_flags=[],
+            should_recommend_professional_help=False,
+            should_prioritize_immediate_safety=False,
+            assistant_guidance="Normal chat.",
+        ),
+        response_language="Russian",
+    )
+
+    assert "Always answer in Russian" in instructions
+    assert "multiple languages" in instructions

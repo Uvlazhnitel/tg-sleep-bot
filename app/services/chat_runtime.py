@@ -92,6 +92,7 @@ def generate_chat_reply(
     history: list[HistoryMessage] | None = None,
     session_id: str | None = None,
     include_debug: bool = False,
+    response_language: str | None = None,
 ) -> ChatResponse:
     chat_service = build_chat_service_for_user(user_id)
     return chat_service.generate_reply(
@@ -99,4 +100,5 @@ def generate_chat_reply(
         history=history or [],
         session_id=session_id,
         include_debug=include_debug,
+        response_language=response_language,
     )

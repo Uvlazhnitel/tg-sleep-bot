@@ -37,6 +37,7 @@ class OpenAIResponseService:
         safety_classification: SafetyClassification,
         feature_context: str = "",
         voice_mode: bool = False,
+        response_language: str | None = None,
     ) -> str:
         instructions = build_assistant_instructions(
             personalization_context,
@@ -44,6 +45,7 @@ class OpenAIResponseService:
             safety_classification,
             feature_context=feature_context,
             voice_mode=voice_mode,
+            response_language=response_language,
         )
         input_items = build_phase1_input(message=message, history=history)
 

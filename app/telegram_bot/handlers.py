@@ -18,13 +18,13 @@ START_TEXT = (
 )
 
 HELP_TEXT = (
-    "You can write naturally, for example:\n"
-    "- I went to bed very late. How do I recover without ruining tomorrow?\n"
-    "- I woke up earlier than planned.\n"
-    "- I keep pressing snooze.\n"
-    "- I can’t fall asleep.\n"
-    "- I’m tired but still want to wake up at 09:00.\n\n"
-    "You can also ask: What do you remember about me?"
+    "Можешь писать свободно, например:\n"
+    "- Я очень поздно лёг. Как восстановиться и не испортить завтрашний день?\n"
+    "- Я проснулся раньше, чем планировал.\n"
+    "- Я постоянно нажимаю snooze.\n"
+    "- Я не могу заснуть.\n"
+    "- Я устал, но всё равно хочу вставать в 09:00.\n\n"
+    "Ещё можно спросить: Что ты помнишь обо мне?"
 )
 
 ERROR_TEXT = "Sorry, I couldn’t process that right now. Try again in a moment."

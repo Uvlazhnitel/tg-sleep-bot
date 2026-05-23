@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+from app.telegram_bot.bot import build_reply_callback
 from app.telegram_bot.handlers import (
     ERROR_TEXT,
     HELP_TEXT,
@@ -99,3 +100,19 @@ def test_free_form_handler_handles_errors_gracefully():
     run(handlers.handle_text(update, build_context()))
 
     assert message.replies == [ERROR_TEXT]
+
+
+def test_telegram_reply_callback_forces_russian(monkeypatch):
+    captured = {}
+
+    def fake_generate_chat_reply(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(reply="Ответ")
+
+    monkeypatch.setattr("app.telegram_bot.bot.generate_chat_reply", fake_generate_chat_reply)
+
+    callback = build_reply_callback()
+    reply = callback("telegram:42", "Mixed bilingual message", [], "telegram-chat:1001")
+
+    assert reply == "Ответ"
+    assert captured["response_language"] == "Russian"
