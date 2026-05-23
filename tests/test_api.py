@@ -4,21 +4,30 @@ from app.api.routes import get_chat_service
 from app.core.config import get_settings
 from app.main import create_app
 from app.models.extractor import MemoryExtractionResult
+from app.models.integration import IntegrationConnectRequest
 from app.models.insight import InsightGenerationResult, InsightPreferenceUpdateRequest
+from app.models.reminder import ReminderCreateRequest
+from app.models.settings import UserSettingsUpdateRequest
 from app.repositories.advice_trace_repository import AdviceTraceRepository
+from app.repositories.integration_repository import IntegrationRepository
 from app.repositories.insight_repository import InsightRepository
 from app.models.memory import MemoryCreateRequest
 from app.repositories.memory_repository import MemoryRepository
 from app.repositories.pending_memory_confirmation_repository import (
     PendingMemoryConfirmationRepository,
 )
+from app.repositories.reminder_repository import ReminderRepository
+from app.repositories.settings_repository import SettingsRepository
 from app.repositories.session_state_repository import SessionStateRepository
 from app.services.chat_service import ChatService
+from app.services.integration_service import CalendarService, HealthDataService
 from app.services.knowledge_service import KnowledgeService
 from app.services.insight_service import InsightService
 from app.services.memory_service import MemoryService
 from app.services.memory_transparency_service import MemoryTransparencyService
+from app.services.reminder_service import ReminderService
 from app.services.safety_classifier import SafetyClassifierService
+from app.services.settings_service import SettingsService
 
 
 class StubOpenAIService:
@@ -41,6 +50,8 @@ class StubOpenAIService:
         self.last_memories = []
         self.last_knowledge_cards = []
         self.last_personalization_context = ""
+        self.last_feature_context = ""
+        self.last_voice_mode = False
         self.last_safety_classification = None
 
     def generate_assistant_reply(
@@ -51,10 +62,14 @@ class StubOpenAIService:
         relevant_knowledge_cards,
         personalization_context,
         safety_classification,
+        feature_context="",
+        voice_mode=False,
     ):
         self.last_memories = relevant_memories
         self.last_knowledge_cards = relevant_knowledge_cards
         self.last_personalization_context = personalization_context
+        self.last_feature_context = feature_context
+        self.last_voice_mode = voice_mode
         self.last_safety_classification = safety_classification
         return self.reply
 
@@ -114,6 +129,12 @@ def build_chat_service(tmp_path, openai_service, *, debug_metadata_allowed=False
         advice_trace_repository=AdviceTraceRepository(database_path),
         insight_repository=InsightRepository(database_path),
     )
+    settings_service = SettingsService(
+        repository=SettingsRepository(database_path, "UTC"),
+        insight_repository=InsightRepository(database_path),
+        user_id="default_user",
+    )
+    integration_repository = IntegrationRepository(database_path)
     return ChatService(
         memory_service=memory_service,
         knowledge_service=knowledge_service,
@@ -121,6 +142,10 @@ def build_chat_service(tmp_path, openai_service, *, debug_metadata_allowed=False
         safety_classifier=SafetyClassifierService(),
         memory_transparency_service=transparency_service,
         insight_service=insight_service,
+        settings_service=settings_service,
+        reminder_service=ReminderService(ReminderRepository(database_path), "default_user"),
+        calendar_service=CalendarService(integration_repository, "default_user"),
+        health_data_service=HealthDataService(integration_repository, "default_user"),
         debug_metadata_allowed=debug_metadata_allowed,
     )
 
@@ -721,6 +746,262 @@ def test_why_do_you_think_that_explains_insight_evidence(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert "because" in response.json()["reply"].lower()
     assert "confident" in response.json()["reply"].lower() or "working pattern" in response.json()["reply"].lower()
+
+
+def test_settings_feature_flags_can_be_enabled_and_disabled(monkeypatch, tmp_path):
+    with TestClient(build_client(monkeypatch, tmp_path)) as client:
+        enabled = client.post("/settings/features/reminders/enable")
+        disabled = client.post("/settings/features/reminders/disable")
+
+    assert enabled.status_code == 200
+    assert enabled.json()["feature_flags"]["reminders"] is True
+    assert disabled.status_code == 200
+    assert disabled.json()["feature_flags"]["reminders"] is False
+
+
+def test_settings_are_shown_readably_in_chat(monkeypatch, tmp_path):
+    chat_service = build_chat_service(tmp_path, StubOpenAIService("Reply."))
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        client.post("/settings/features/calendar/enable")
+        response = client.post("/chat", json={"message": "What features are enabled?"})
+
+    assert response.status_code == 200
+    assert "calendar" in response.json()["reply"].lower()
+
+
+def test_user_can_update_timezone(monkeypatch, tmp_path):
+    with TestClient(build_client(monkeypatch, tmp_path)) as client:
+        response = client.patch("/settings", json={"timezone": "Europe/Riga"})
+
+    assert response.status_code == 200
+    assert response.json()["timezone"] == "Europe/Riga"
+
+
+def test_invalid_timezone_is_rejected(monkeypatch, tmp_path):
+    with TestClient(build_client(monkeypatch, tmp_path)) as client:
+        response = client.patch("/settings", json={"timezone": "Nope/Invalid"})
+
+    assert response.status_code == 422
+
+
+def test_proactive_insight_toggle_syncs_to_settings(monkeypatch, tmp_path):
+    chat_service = build_chat_service(tmp_path, StubOpenAIService("Reply."))
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Turn off proactive insights."})
+        settings = client.get("/settings")
+
+    assert response.status_code == 200
+    assert settings.status_code == 200
+    assert settings.json()["proactive_insights_enabled"] is False
+
+
+def test_reminders_can_be_created_listed_updated_and_deleted(monkeypatch, tmp_path):
+    with TestClient(build_client(monkeypatch, tmp_path)) as client:
+        created = client.post(
+            "/reminders",
+            json={
+                "type": "custom_sleep_reminder",
+                "title": "Wind down",
+                "message": "Start winding down.",
+                "scheduled_time": "2026-01-01T22:30:00+00:00",
+                "timezone": "UTC",
+            },
+        )
+        reminder_id = created.json()["id"]
+        listed = client.get("/reminders")
+        updated = client.patch(
+            f"/reminders/{reminder_id}",
+            json={"active": False},
+        )
+        deleted = client.delete(f"/reminders/{reminder_id}")
+
+    assert created.status_code == 200
+    assert listed.status_code == 200
+    assert listed.json()["reminders"]
+    assert updated.status_code == 200
+    assert updated.json()["active"] is False
+    assert deleted.status_code == 200
+
+
+def test_reminders_respect_timezone_and_due_scan(monkeypatch, tmp_path):
+    with TestClient(build_client(monkeypatch, tmp_path)) as client:
+        client.post(
+            "/reminders",
+            json={
+                "type": "custom_sleep_reminder",
+                "title": "Morning light",
+                "message": "Get light after waking.",
+                "scheduled_time": "2000-01-01T08:30:00+00:00",
+                "timezone": "Europe/Riga",
+            },
+        )
+        due = client.post("/reminders/send-due")
+
+    assert due.status_code == 200
+    assert due.json()["reminders"]
+    assert due.json()["reminders"][0]["timezone"] == "Europe/Riga"
+
+
+def test_disabled_reminders_are_not_sent(monkeypatch, tmp_path):
+    with TestClient(build_client(monkeypatch, tmp_path)) as client:
+        created = client.post(
+            "/reminders",
+            json={
+                "type": "custom_sleep_reminder",
+                "title": "Morning light",
+                "message": "Get light after waking.",
+                "scheduled_time": "2000-01-01T08:30:00+00:00",
+                "timezone": "UTC",
+            },
+        )
+        client.patch(f"/reminders/{created.json()['id']}", json={"active": False})
+        due = client.post("/reminders/send-due")
+
+    assert due.status_code == 200
+    assert due.json()["reminders"] == []
+
+
+def test_chat_can_create_reminder_from_explicit_request(monkeypatch, tmp_path):
+    chat_service = build_chat_service(tmp_path, StubOpenAIService("Reply."))
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "Remind me to start winding down at 23:30."},
+        )
+        reminders = client.get("/reminders")
+
+    assert response.status_code == 200
+    assert "set that reminder" in response.json()["reply"].lower()
+    assert reminders.status_code == 200
+    assert len(reminders.json()["reminders"]) == 1
+
+
+def test_assistant_asks_permission_before_non_explicit_reminder(monkeypatch, tmp_path):
+    chat_service = build_chat_service(tmp_path, StubOpenAIService("Reply."))
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Should I set a reminder?"})
+
+    assert response.status_code == 200
+    assert "tell me the reminder and time" in response.json()["reply"].lower()
+
+
+def test_calendar_context_not_loaded_when_disabled(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService("Reply.")
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Can I nap today if I have an early meeting tomorrow morning?"})
+
+    assert response.status_code == 200
+    assert "Calendar context" not in openai_service.last_feature_context
+
+
+def test_health_data_context_not_loaded_when_disabled(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService("Reply.")
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "What does my wearable say about last night?"})
+
+    assert response.status_code == 200
+    assert "Reply." == response.json()["reply"]
+
+
+def test_calendar_connect_disconnect_and_health_data_delete(monkeypatch, tmp_path):
+    with TestClient(build_client(monkeypatch, tmp_path)) as client:
+        calendar_connected = client.post(
+            "/integrations/calendar/connect",
+            json={"provider_name": "mock"},
+        )
+        calendar_disconnected = client.post("/integrations/calendar/disconnect")
+        health_connected = client.post(
+            "/integrations/health/connect",
+            json={"provider_name": "mock"},
+        )
+        deleted = client.delete("/integrations/health/data")
+
+    assert calendar_connected.status_code == 200
+    assert calendar_connected.json()["connections"][0]["status"] == "connected"
+    assert calendar_disconnected.status_code == 200
+    assert health_connected.status_code == 200
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted_count"] >= 0
+
+
+def test_wearable_data_is_phrased_as_approximate(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService("Reply.")
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        client.post("/integrations/health/connect", json={"provider_name": "mock"})
+        response = client.post("/chat", json={"message": "What does my wearable say about last night?"})
+
+    assert response.status_code == 200
+    assert "approximate" in openai_service.last_feature_context.lower()
+
+
+def test_private_mode_default_blocks_new_memory_even_with_integrations(monkeypatch, tmp_path):
+    chat_service = build_chat_service(
+        tmp_path,
+        StubOpenAIService(
+            "Reply.",
+            extraction=MemoryExtractionResult(
+                memory_updates=[
+                    {
+                        "action": "create",
+                        "type": "preference",
+                        "content": "User wants reminder support.",
+                        "confidence": 0.9,
+                        "reason": "Explicit request.",
+                    }
+                ],
+                ignored=[],
+            ),
+        ),
+    )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        client.patch("/settings", json={"private_mode_default": True})
+        client.post("/integrations/calendar/connect", json={"provider_name": "mock"})
+        response = client.post(
+            "/chat",
+            json={"message": "I want reminder support.", "session_id": "new-session"},
+        )
+
+    assert response.status_code == 200
+    assert not any(
+        "reminder support" in memory.content.lower()
+        for memory in chat_service.memory_service.list_memories(include_archived=True)
+    )
+
+
+def test_no_raw_provider_data_exposed_by_default(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService("Reply.")
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        client.post("/integrations/health/connect", json={"provider_name": "mock"})
+        response = client.post("/chat", json={"message": "What does my wearable say about last night?"})
+
+    assert response.status_code == 200
+    assert "raw_summary_json" not in response.json()["reply"]
+    assert "raw" not in response.json()["reply"].lower()
+
+
+def test_voice_mode_sets_voice_friendly_prompting(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService("Reply.")
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        client.patch("/settings", json={"voice_mode": True})
+        response = client.post("/chat", json={"message": "I snoozed again."})
+
+    assert response.status_code == 200
+    assert openai_service.last_voice_mode is True
 
 
 def test_why_did_you_recommend_that_uses_recent_trace(monkeypatch, tmp_path):

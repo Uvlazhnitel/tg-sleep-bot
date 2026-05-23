@@ -91,6 +91,75 @@ CREATE TABLE IF NOT EXISTS insight_preferences (
     insight_min_evidence_threshold INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id TEXT PRIMARY KEY,
+    timezone TEXT NOT NULL,
+    reminders_enabled INTEGER NOT NULL,
+    calendar_enabled INTEGER NOT NULL,
+    health_data_enabled INTEGER NOT NULL,
+    voice_mode INTEGER NOT NULL,
+    private_mode_default INTEGER NOT NULL,
+    proactive_insights_enabled INTEGER NOT NULL,
+    feature_flags_json TEXT NOT NULL,
+    notification_quiet_hours_json TEXT NOT NULL,
+    goal_timezone_override TEXT,
+    goal_timezone_override_until TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    scheduled_time TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    recurrence_rule TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL,
+    last_sent_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminders_user_active_scheduled
+ON reminders (user_id, active, scheduled_time);
+
+CREATE TABLE IF NOT EXISTS integration_connections (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    provider_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    disconnected_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_integration_connections_user_kind
+ON integration_connections (user_id, kind, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS health_sleep_summaries (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    provider_name TEXT NOT NULL,
+    sleep_start TEXT NOT NULL,
+    sleep_end TEXT NOT NULL,
+    wake_time TEXT NOT NULL,
+    sleep_duration_minutes INTEGER NOT NULL,
+    interruptions INTEGER,
+    resting_heart_rate REAL,
+    sleep_score REAL,
+    device_derived INTEGER NOT NULL DEFAULT 1,
+    raw_summary_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_sleep_summaries_user_provider_created
+ON health_sleep_summaries (user_id, provider_name, created_at DESC);
 """
 
 MEMORY_MIGRATIONS: tuple[tuple[str, str], ...] = (

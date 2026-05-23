@@ -23,6 +23,9 @@ class Settings:
     enable_debug_metadata: bool
     knowledge_cards_path: str
     default_user_id: str
+    default_timezone: str
+    telegram_bot_token: str | None
+    telegram_mode: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -39,6 +42,9 @@ class Settings:
                 "KNOWLEDGE_CARDS_PATH", "app/data/knowledge_cards.json"
             ),
             default_user_id="default_user",
+            default_timezone=os.getenv("DEFAULT_TIMEZONE", "UTC"),
+            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
+            telegram_mode=os.getenv("TELEGRAM_MODE", "polling"),
         )
 
     def require_openai_api_key(self) -> None:

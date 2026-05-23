@@ -56,9 +56,21 @@ class InsightService:
             "what should i experiment with this week",
         }:
             return InsightIntent("manual_insights")
-        if lowered in {"don't give me proactive insights.", "don't give me proactive insights", "dont give me proactive insights"}:
+        if lowered in {
+            "don't give me proactive insights.",
+            "don't give me proactive insights",
+            "dont give me proactive insights",
+            "turn off proactive insights.",
+            "turn off proactive insights",
+        }:
             return InsightIntent("disable_proactive_insights")
-        if lowered in {"turn insights back on.", "turn insights back on", "enable proactive insights"}:
+        if lowered in {
+            "turn insights back on.",
+            "turn insights back on",
+            "enable proactive insights",
+            "turn on proactive insights.",
+            "turn on proactive insights",
+        }:
             return InsightIntent("enable_proactive_insights")
         if lowered in {"dismiss this insight.", "dismiss this insight"}:
             return InsightIntent("dismiss_insight")

@@ -52,6 +52,8 @@ def build_assistant_instructions(
     personalization_context: str,
     relevant_knowledge_cards: list[KnowledgeCard],
     safety_classification: SafetyClassification,
+    feature_context: str = "",
+    voice_mode: bool = False,
 ) -> str:
     knowledge_block = format_knowledge_cards_for_prompt(relevant_knowledge_cards)
     dynamic_rules = """
@@ -65,6 +67,19 @@ Avoid repeating advice that did not work before unless there is a clear reason.
 If memory conflicts with safety or knowledge-card guidance, prioritize safety first, then knowledge, then preference.
 If useful, mention previous user context briefly without sounding invasive.
 Never ask for daily reports.
+""".strip()
+    feature_rules = """
+Use optional feature context only when it is directly relevant to the user's message.
+Do not mention reminders, calendar, or health data unless they materially help the answer.
+If calendar or wearable data influenced the advice, say so briefly and plainly.
+Treat wearable data as approximate, not medical-grade truth.
+Do not expose raw provider data or private event details.
+""".strip()
+    voice_rules = """
+Voice mode is enabled.
+Prefer short paragraphs over bullet lists.
+Avoid dense formatting and long multi-step lists.
+Keep wording easy to read aloud.
 """.strip()
     safety_rules = """
 Safety comes before personalization and wake-time optimization.
@@ -97,6 +112,8 @@ Keep recommendations aligned with protecting or gradually restoring a stable tar
         "Wake Goal Framing": wake_goal_framing,
         "Personalization Usage Rules": dynamic_rules,
         "Personalization Context": personalization_context,
+        "Optional Feature Rules": feature_rules,
+        "Optional Feature Context": feature_context or "No optional feature context.",
         "Safety Classification": format_safety_classification_for_prompt(
             safety_classification
         ),
@@ -108,6 +125,8 @@ Keep recommendations aligned with protecting or gradually restoring a stable tar
             "or claim certainty where general sleep advice is more appropriate."
         ),
     }
+    if voice_mode:
+        sections["Voice Mode"] = voice_rules
     return "\n\n".join(f"{name}:\n{content}" for name, content in sections.items())
 
 

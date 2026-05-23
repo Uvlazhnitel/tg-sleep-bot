@@ -4,7 +4,7 @@ Personal sleep assistant chatbot focused on helping a single user wake up every 
 
 ## Current status
 
-This repository now includes a Phase 7 backend prototype:
+This repository now includes a Phase 8 backend prototype:
 
 - Python 3.13 + FastAPI HTTP service
 - `POST /chat` endpoint backed by the OpenAI Responses API
@@ -14,6 +14,7 @@ This repository now includes a Phase 7 backend prototype:
 - deterministic safety layer for red flags, medical boundaries, and crisis routing
 - transparent memory controls, private mode, and advice explanations
 - lightweight insights and experiment suggestions from saved memory plus non-private chat traces
+- optional settings, reminders, timezone-aware scheduling, and mock integration hooks
 - fixed user goal plus editable preferences and patterns
 - no Telegram adapter yet
 
@@ -65,6 +66,9 @@ export DATABASE_PATH="sleep_assistant.db"
 export APP_ENV="development"
 export ENABLE_DEBUG_METADATA="false"
 export KNOWLEDGE_CARDS_PATH="app/data/knowledge_cards.json"
+export DEFAULT_TIMEZONE="UTC"
+export TELEGRAM_BOT_TOKEN="your_botfather_token_here"
+export TELEGRAM_MODE="polling"
 ```
 
 You can also copy `.env.example` as a reference:
@@ -82,6 +86,23 @@ uvicorn app.main:app --reload
 ```
 
 The API will be available at `http://127.0.0.1:8000`.
+
+### 4. Run the Telegram bot in polling mode
+
+Create a bot via BotFather first:
+
+1. Open Telegram and message `@BotFather`
+2. Run `/newbot`
+3. Choose a bot name and username
+4. Copy the token and set `TELEGRAM_BOT_TOKEN`
+
+Then start the bot:
+
+```bash
+python -m app.telegram_bot.bot
+```
+
+The Telegram bot uses the same internal chat service as the FastAPI `/chat` endpoint. It does not send local HTTP requests back into the API.
 
 ## API
 
@@ -111,6 +132,26 @@ curl -X POST http://127.0.0.1:8000/chat \
 ```
 
 Debug metadata is only returned when debug mode is enabled by environment configuration.
+
+### Settings
+
+Phase 8 adds a user settings layer with feature flags, timezone handling, quiet hours, and private-mode defaults.
+
+Key endpoints:
+
+- `GET /settings`
+- `PATCH /settings`
+- `GET /settings/features`
+- `POST /settings/features/{feature}/enable`
+- `POST /settings/features/{feature}/disable`
+
+Current feature flags:
+
+- `reminders`
+- `calendar`
+- `health_data`
+- `timezone_travel`
+- `voice_mode`
 
 ### Chat
 
@@ -390,6 +431,122 @@ Experiment feedback updates memory naturally:
 
 Normal insight explanations stay in plain language and do not expose raw JSON or internal ids.
 
+## Advanced features
+
+Phase 8 keeps advanced features modular and opt-in.
+
+What it adds:
+
+- timezone-aware user settings
+- optional reminders with quiet hours
+- optional calendar integration through a provider interface
+- optional health-data integration through a provider interface
+- voice-friendly response mode
+
+What it does not add:
+
+- mandatory integrations
+- daily report requirements
+- tracker dashboards
+- automatic reminder creation without permission
+- persistent storage of private calendar event details by default
+
+## Reminders
+
+Reminder endpoints:
+
+- `GET /reminders`
+- `POST /reminders`
+- `PATCH /reminders/{reminder_id}`
+- `DELETE /reminders/{reminder_id}`
+- `POST /reminders/send-due`
+
+Supported reminder types:
+
+- `evening_wind_down`
+- `morning_wake_support`
+- `experiment_followup`
+- `custom_sleep_reminder`
+
+Phase 8 reminder delivery is intentionally lightweight:
+
+- reminders are stored in SQLite
+- `send-due` performs timezone-aware due scanning
+- one-time reminders deactivate after send
+- recurring reminders reschedule themselves
+- the app does not run an always-on scheduler
+- deployments can call `POST /reminders/send-due` from cron or another worker
+
+Natural-language reminder examples:
+
+- `Remind me to start winding down at 23:30.`
+- `Remind me tomorrow morning to get light after waking.`
+- `What reminders do I have?`
+- `Turn off evening reminders.`
+
+## Timezone handling
+
+Phase 8 adds timezone-aware interpretation for reminders and wake-time support.
+
+- the user has a stored profile timezone
+- reminders use the effective timezone
+- the `09:00` wake goal remains the anchor, but it is interpreted relative to the user timezone
+- temporary local-time overrides can be set for a travel week
+- travel mentions alone do not silently change persistent settings
+
+## Integrations
+
+Calendar endpoints:
+
+- `POST /integrations/calendar/connect`
+- `POST /integrations/calendar/disconnect`
+- `DELETE /integrations/calendar/data`
+
+Health endpoints:
+
+- `POST /integrations/health/connect`
+- `POST /integrations/health/disconnect`
+- `DELETE /integrations/health/data`
+
+Current provider abstractions:
+
+- `CalendarProvider`
+- `HealthDataProvider`
+
+Current mock providers:
+
+- `MockCalendarProvider`
+- `MockHealthDataProvider`
+
+Phase 8 integration rules:
+
+- integrations are opt-in only
+- calendar context is fetched minimally and is not persisted by default
+- health sleep summaries can be stored locally so they can be deleted later
+- wearable-derived sleep data is treated as approximate, not medical-grade
+- neither calendar data nor health data is written into long-term memory
+
+## Privacy and data deletion
+
+For every advanced feature:
+
+- the user can leave it disabled
+- the user can disconnect it
+- the user can delete stored reminder or imported health data
+- the assistant should use the minimum data needed for the current reply
+- notifications should avoid sensitive content unless the user explicitly asked for it
+- raw provider payloads should not be shown in normal chat replies
+
+## Adding providers
+
+To add a new integration provider later:
+
+- implement the `CalendarProvider` or `HealthDataProvider` interface
+- register it in the corresponding service
+- keep returned data minimal and summary-oriented
+- support disconnect and delete-data flows
+- avoid exposing raw provider payloads in normal user responses
+
 ## Sensitive memory handling
 
 For normal preferences, goals, and recurring sleep patterns, automatic saving is still allowed.
@@ -514,11 +671,10 @@ This bot is an informational sleep assistant, not a doctor. It can help with pra
 - recommend medication doses or medication changes
 - manage emergencies beyond directing the user to immediate help
 
-## Phase 7 limitations
+## Phase 8 limitations
 
-Phase 7 intentionally still does not include:
+Phase 8 intentionally still does not include:
 
-- Telegram integration
 - vector search or embeddings
 - dynamic web search
 - daily sleep reports or check-ins
@@ -526,11 +682,35 @@ Phase 7 intentionally still does not include:
 - perfect memory extraction
 - automatic medical diagnosis
 - advanced analytics dashboards
-- wearable integrations
+- real provider OAuth flows by default
 
-Natural-language memory editing is heuristic and may not always identify the right memory on the first try. Ambiguous changes may require clarification. Advice explanations are based on recent stored trace metadata and may be limited for older messages. Insight detection is approximate and only as good as the evidence the user voluntarily shared. This is not a medical record system. Insights are not medical conclusions. The safety classifier is not a medical diagnosis tool. It may miss subtle red flags, and it may sometimes be cautious. Crisis and medical resource localization is still generic and should be improved later. Pattern detection is still simple and may be imperfect. Low-confidence memories and low-confidence insights are treated as hypotheses, and the user can disable, correct, dismiss, archive, or delete them at any time.
+Natural-language memory editing is heuristic and may not always identify the right memory on the first try. Ambiguous changes may require clarification. Advice explanations are based on recent stored trace metadata and may be limited for older messages. Insight detection is approximate and only as good as the evidence the user voluntarily shared. Reminder delivery depends on the deployment environment calling the due-scan API. Calendar and health integrations are optional and may be mock providers at first. Wearable data is approximate and not medical-grade. This is not a medical record system. Insights are not medical conclusions. The safety classifier is not a medical diagnosis tool. It may miss subtle red flags, and it may sometimes be cautious. Crisis and medical resource localization is still generic and should be improved later. Pattern detection is still simple and may be imperfect. Low-confidence memories and low-confidence insights are treated as hypotheses, and the user can disable, correct, dismiss, archive, or delete them at any time.
 
 Conversation history is still client-supplied per request and is only used as a short context window.
+
+## Telegram bot
+
+Telegram support is available in polling mode for local development and simple deployments.
+
+- Required env var: `TELEGRAM_BOT_TOKEN`
+- Optional env var: `TELEGRAM_MODE=polling`
+- Run with: `python -m app.telegram_bot.bot`
+- Test with `/start`, `/help`, and normal free-form messages
+- Telegram users are mapped to internal users as `telegram:<telegram_user_id>`
+- Telegram keeps a small in-memory per-user history window for recent turns
+
+Current limitations:
+
+- polling only
+- no webhook deployment flow yet
+- no predefined menus
+- no daily reports
+- no advanced reminder delivery through Telegram yet
+
+Future webhook note:
+
+- a later phase can add `POST /telegram/webhook`
+- that mode would require a public HTTPS URL and Telegram `setWebhook`
 
 ## Testing
 
@@ -564,6 +744,10 @@ Manual smoke scenarios to try:
 - opting out of proactive insights
 - dismissing an insight and confirming it does not keep resurfacing
 - saying `That experiment helped.` or `That experiment did not help.`
+- enabling and disabling feature flags
+- creating a reminder and scanning due reminders
+- connecting and disconnecting mock calendar and health providers
+- changing timezone and using private mode by default
 
 ## Documents
 

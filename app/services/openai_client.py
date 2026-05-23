@@ -35,11 +35,15 @@ class OpenAIResponseService:
         relevant_knowledge_cards: list[KnowledgeCard],
         personalization_context: str,
         safety_classification: SafetyClassification,
+        feature_context: str = "",
+        voice_mode: bool = False,
     ) -> str:
         instructions = build_assistant_instructions(
             personalization_context,
             relevant_knowledge_cards,
             safety_classification,
+            feature_context=feature_context,
+            voice_mode=voice_mode,
         )
         input_items = build_phase1_input(message=message, history=history)
 
