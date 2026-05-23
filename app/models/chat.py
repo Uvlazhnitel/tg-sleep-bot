@@ -19,6 +19,7 @@ class HistoryMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: list[HistoryMessage] = Field(default_factory=list)
+    session_id: str | None = None
     include_debug: bool = False
 
     @field_validator("message")
@@ -27,6 +28,16 @@ class ChatRequest(BaseModel):
         cleaned = value.strip()
         if not cleaned:
             raise ValueError("Message must not be empty.")
+        return cleaned
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("session_id must not be empty.")
         return cleaned
 
 

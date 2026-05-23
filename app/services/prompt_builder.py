@@ -131,6 +131,10 @@ Save worked_before only when the user says something helped.
 Save did_not_work only when the user says something did not help.
 Save hypotheses with lower confidence when evidence is weak.
 Use update or archive instead of duplicate create when appropriate.
+Mark each proposal with sensitivity as normal, sensitive, or crisis.
+Use should_ask_user_before_saving=true for medication-related, breathing-related, mental-health-related, or substance-related memories that may matter later but need extra consent.
+Set skip_memory=true if nothing from this exchange should be saved.
+Do not store crisis details as ordinary memory.
 """.strip()
 
 

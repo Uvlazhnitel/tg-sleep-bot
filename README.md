@@ -4,7 +4,7 @@ Personal sleep assistant chatbot focused on helping a single user wake up every 
 
 ## Current status
 
-This repository now includes a Phase 5 backend prototype:
+This repository now includes a Phase 6 backend prototype:
 
 - Python 3.13 + FastAPI HTTP service
 - `POST /chat` endpoint backed by the OpenAI Responses API
@@ -12,6 +12,7 @@ This repository now includes a Phase 5 backend prototype:
 - curated local knowledge cards for practical sleep guidance
 - lightweight personalization that adapts to what helped or did not help
 - deterministic safety layer for red flags, medical boundaries, and crisis routing
+- transparent memory controls, private mode, and advice explanations
 - fixed user goal plus editable preferences and patterns
 - no Telegram adapter yet
 
@@ -24,6 +25,7 @@ The assistant is designed to be:
 - grounded by a small curated sleep knowledge base
 - personalized without requiring daily reports
 - safety-first when red flags are present
+- explicit about what it remembers and why
 - ready for later deeper analytics or integrations
 
 ## Project structure
@@ -115,6 +117,7 @@ curl -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
   -d '{
     "message": "I went to sleep at 3:30 and still want to wake up at 9 tomorrow. What should I do?",
+    "session_id": "example-session",
     "history": [
       { "role": "user", "content": "I often snooze my alarms." },
       { "role": "assistant", "content": "We should keep your 09:00 wake time consistent and make snoozing harder." }
@@ -208,12 +211,16 @@ The chat flow is:
 The user can also manage memory explicitly:
 
 - ask `What do you remember about me?`
+- ask `What are you using to personalize advice?`
 - say `Forget that I often snooze alarms.`
 - say `Change my wake-up goal to 08:30.`
 - say `That helped yesterday.`
 - say `That didn't work for me.`
 - say `Actually, that's wrong.`
 - say `Remember that I usually need a slow morning.`
+- say `Why did you recommend that?`
+- say `Don't remember this.`
+- say `Private mode.`
 
 Phase 5 adds a safety-aware memory filter:
 
@@ -221,6 +228,14 @@ Phase 5 adds a safety-aware memory filter:
 - diagnosis-like memories are rejected
 - sensitive medical specifics are blocked unless rewritten into a neutral guardrail-style memory
 - Category D urgent-risk chats skip normal memory extraction entirely
+
+Phase 6 adds trust and transparency controls:
+
+- memory summaries are grouped into readable categories
+- the user can delete or correct remembered items in natural language
+- memory can be turned off for a session with `session_id`
+- the assistant can explain recent advice in plain language
+- sensitive memory proposals pause and ask before saving
 
 ## How personalization works
 
@@ -248,6 +263,91 @@ Examples of feedback the bot can use:
 - `Remember that I usually need a slow morning.`
 
 The assistant uses a compact personalization context instead of dumping all memories into the prompt.
+
+## Memory transparency
+
+Natural-language memory UX now supports:
+
+- `What do you remember about me?`
+- `Show my memory.`
+- `Forget that I snooze a lot.`
+- `Coffee doesn't affect my sleep.`
+- `Change my wake-up goal to 08:30.`
+- `Why did you recommend that?`
+- `Don't remember this.`
+- `Private mode.`
+
+The readable memory summary is grouped into:
+
+- Goal
+- Preferences
+- Patterns
+- Hypotheses
+- What worked before
+- What did not work
+- Safety-relevant notes
+
+Normal chat responses never expose raw memory JSON, internal prompts, or internal memory ids.
+
+## Private mode and memory control
+
+Phase 6 adds session-scoped memory control. Send a `session_id` with `POST /chat` if you want multi-turn private mode or advice explanation continuity.
+
+Disable memory for a session:
+
+```bash
+curl -X POST http://127.0.0.1:8000/memory/disable \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"my-session"}'
+```
+
+Re-enable memory for a session:
+
+```bash
+curl -X POST http://127.0.0.1:8000/memory/enable \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"my-session"}'
+```
+
+When memory is off for a session:
+
+- the assistant still answers normally
+- new memories are not saved
+- pending sensitive-memory confirmations are not created
+
+## Advice explanations
+
+Phase 6 stores a lightweight recent advice trace per `user_id + session_id` so the bot can answer questions like:
+
+- `Why did you recommend that?`
+- `What are you basing this on?`
+- `Is that because of something you remember about me?`
+
+The explanation can mention:
+
+- the `09:00` wake-up goal
+- relevant personal memory if it was used
+- relevant knowledge-card grounding
+- safety context if that changed the advice
+
+It does not expose raw prompts, internal JSON, or classifier output.
+
+## Sensitive memory handling
+
+For normal preferences, goals, and recurring sleep patterns, automatic saving is still allowed.
+
+For sensitive or medical-adjacent proposals such as:
+
+- medication-related sleep concerns
+- breathing-related sleep concerns
+- substance-reliance concerns
+- mental-health-adjacent sleep concerns
+
+the bot asks before saving:
+
+- `Do you want me to remember this for future sleep advice?`
+
+Crisis details are not saved as ordinary memory.
 
 ## Safety layer
 
@@ -341,9 +441,11 @@ Phase 5 also adds safety-oriented cards such as:
 - The bot stores only a narrow set of sleep-related durable memories
 - The user can list and archive memories through the API
 - The user can edit memories and give explicit memory feedback through the API
+- The user can temporarily disable memory by session
 - Memory extraction is model-assisted, but the model does not write directly to the database
 - Knowledge cards are static curated application content stored locally in the repository
 - Sensitive crisis and diagnosis-like details are filtered and not stored as casual long-term memory
+- Advice explanations use lightweight trace metadata, not a full transcript archive
 
 ## Medical boundary
 
@@ -354,9 +456,9 @@ This bot is an informational sleep assistant, not a doctor. It can help with pra
 - recommend medication doses or medication changes
 - manage emergencies beyond directing the user to immediate help
 
-## Phase 5 limitations
+## Phase 6 limitations
 
-Phase 5 intentionally does not include:
+Phase 6 intentionally does not include:
 
 - Telegram integration
 - vector search or embeddings
@@ -368,7 +470,7 @@ Phase 5 intentionally does not include:
 - advanced analytics dashboards
 - wearable integrations
 
-The safety classifier is not a medical diagnosis tool. It may miss subtle red flags, and it may sometimes be cautious. Crisis and medical resource localization is still generic and should be improved later. Pattern detection is still simple and may be imperfect. Low-confidence memories are treated as hypotheses, and the user can correct or delete memories at any time.
+Natural-language memory editing is heuristic and may not always identify the right memory on the first try. Ambiguous changes may require clarification. Advice explanations are based on recent stored trace metadata and may be limited for older messages. This is not a medical record system. The safety classifier is not a medical diagnosis tool. It may miss subtle red flags, and it may sometimes be cautious. Crisis and medical resource localization is still generic and should be improved later. Pattern detection is still simple and may be imperfect. Low-confidence memories are treated as hypotheses, and the user can correct or delete memories at any time.
 
 Conversation history is still client-supplied per request and is only used as a short context window.
 
@@ -397,6 +499,9 @@ Manual smoke scenarios to try:
 - asking about medication dosage for sleep
 - saying alcohol helps with sleep
 - self-harm or crisis language that should prioritize immediate safety
+- asking `Why did you recommend that?` after a normal reply
+- turning memory off for a session and confirming nothing new is saved
+- sensitive memory proposal that should ask for consent before saving
 
 ## Documents
 

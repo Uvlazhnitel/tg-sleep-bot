@@ -4,11 +4,17 @@ from app.api.routes import get_chat_service
 from app.core.config import get_settings
 from app.main import create_app
 from app.models.extractor import MemoryExtractionResult
+from app.repositories.advice_trace_repository import AdviceTraceRepository
 from app.models.memory import MemoryCreateRequest
 from app.repositories.memory_repository import MemoryRepository
+from app.repositories.pending_memory_confirmation_repository import (
+    PendingMemoryConfirmationRepository,
+)
+from app.repositories.session_state_repository import SessionStateRepository
 from app.services.chat_service import ChatService
 from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
+from app.services.memory_transparency_service import MemoryTransparencyService
 from app.services.safety_classifier import SafetyClassifierService
 
 
@@ -68,14 +74,24 @@ def build_client(monkeypatch, tmp_path, chat_service=None, *, app_env="productio
 
 
 def build_chat_service(tmp_path, openai_service, *, debug_metadata_allowed=False):
-    repository = MemoryRepository(str(tmp_path / "service.db"))
+    database_path = str(tmp_path / "api.db")
+    repository = MemoryRepository(database_path)
     memory_service = MemoryService(repository, "default_user")
     memory_service.ensure_seed_memories()
+    knowledge_service = KnowledgeService("app/data/knowledge_cards.json")
+    transparency_service = MemoryTransparencyService(
+        memory_service=memory_service,
+        knowledge_service=knowledge_service,
+        advice_trace_repository=AdviceTraceRepository(database_path),
+        session_state_repository=SessionStateRepository(database_path),
+        pending_confirmation_repository=PendingMemoryConfirmationRepository(database_path),
+    )
     return ChatService(
         memory_service=memory_service,
-        knowledge_service=KnowledgeService("app/data/knowledge_cards.json"),
+        knowledge_service=knowledge_service,
         openai_service=openai_service,
         safety_classifier=SafetyClassifierService(),
+        memory_transparency_service=transparency_service,
         debug_metadata_allowed=debug_metadata_allowed,
     )
 
@@ -153,7 +169,9 @@ def test_chat_memory_summary_intent(monkeypatch, tmp_path):
         response = client.post("/chat", json={"message": "What do you remember about me?"})
 
     assert response.status_code == 200
-    assert "Here is what I currently remember about you" in response.json()["reply"]
+    assert "I currently remember:" in response.json()["reply"]
+    assert "Goal:" in response.json()["reply"]
+    assert "Preferences:" in response.json()["reply"]
 
 
 def test_chat_feedback_helped_creates_memory(monkeypatch, tmp_path):
@@ -215,6 +233,49 @@ def test_chat_ambiguous_feedback_asks_clarifying_question(monkeypatch, tmp_path)
     assert "What part helped" in response.json()["reply"]
 
 
+def test_forget_that_i_snooze_archives_correct_memory(monkeypatch, tmp_path):
+    chat_service = build_chat_service(tmp_path, StubOpenAIService("Reply."))
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Forget that I snooze alarms."})
+
+    assert response.status_code == 200
+    assert "removed that memory" in response.json()["reply"]
+    assert any(
+        memory.is_archived
+        for memory in chat_service.memory_service.list_memories(include_archived=True)
+        if "snoozing alarms" in memory.content
+    )
+
+
+def test_ambiguous_delete_asks_for_clarification(monkeypatch, tmp_path):
+    chat_service = build_chat_service(tmp_path, StubOpenAIService("Reply."))
+    chat_service.memory_service.create_memory(
+        MemoryCreateRequest(
+            type="hypothesis",
+            content="Late caffeine may affect sleep.",
+            confidence=0.5,
+            source="manual",
+        )
+    )
+    chat_service.memory_service.create_memory(
+        MemoryCreateRequest(
+            type="preference",
+            content="User prefers not to drink coffee after lunch.",
+            confidence=0.9,
+            source="manual",
+        )
+    )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Forget everything about caffeine."})
+
+    assert response.status_code == 200
+    assert "Which one should I remove?" in response.json()["reply"]
+
+
 def test_chat_includes_relevant_memory_and_knowledge_context(monkeypatch, tmp_path):
     chat_service = build_chat_service(tmp_path, StubOpenAIService("Try morning light again."))
     chat_service.memory_service.create_memory(
@@ -273,6 +334,200 @@ def test_chat_returns_reply_when_memory_extraction_fails(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json()["reply"] == "Still keep 09:00 tomorrow."
+
+
+def test_coffee_does_not_affect_me_downgrades_hypothesis(monkeypatch, tmp_path):
+    chat_service = build_chat_service(tmp_path, StubOpenAIService("Reply."))
+    created = chat_service.memory_service.create_memory(
+        MemoryCreateRequest(
+            type="hypothesis",
+            content="Coffee may affect the user's sleep.",
+            confidence=0.4,
+            source="manual",
+        )
+    )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "Coffee doesn't affect my sleep."},
+        )
+
+    refreshed = chat_service.memory_service.get_memory(created.id)
+    assert response.status_code == 200
+    assert "caffeine-related" in response.json()["reply"].lower() or "coffee" in response.json()["reply"].lower()
+    assert refreshed.confidence < 0.4 or refreshed.is_archived is True
+
+
+def test_change_wake_goal_updates_fixed_goal(monkeypatch, tmp_path):
+    chat_service = build_chat_service(tmp_path, StubOpenAIService("Reply."))
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "Change my wake-up goal to 08:30."},
+        )
+
+    assert response.status_code == 200
+    assert "08:30" in response.json()["reply"]
+    assert any(
+        memory.type == "fixed_goal" and "08:30" in memory.content
+        for memory in chat_service.memory_service.list_memories()
+    )
+
+
+def test_why_did_you_recommend_that_uses_recent_trace(monkeypatch, tmp_path):
+    chat_service = build_chat_service(
+        tmp_path,
+        StubOpenAIService("Avoid a late nap and keep your 09:00 wake time tomorrow."),
+    )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/chat",
+            json={
+                "message": "I slept badly and want to nap late today.",
+                "session_id": "s1",
+            },
+        )
+        second = client.post(
+            "/chat",
+            json={
+                "message": "Why did you recommend that?",
+                "session_id": "s1",
+            },
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert "09:00" in second.json()["reply"]
+    assert "general sleep guidance" in second.json()["reply"].lower()
+
+
+def test_dont_remember_this_prevents_memory_saving_for_turn(monkeypatch, tmp_path):
+    chat_service = build_chat_service(
+        tmp_path,
+        StubOpenAIService(
+            "Reply.",
+            extraction=MemoryExtractionResult(
+                memory_updates=[
+                    {
+                        "action": "create",
+                        "type": "preference",
+                        "content": "User wants detailed explanations.",
+                        "confidence": 0.9,
+                        "reason": "Explicit request.",
+                    }
+                ],
+                ignored=[],
+            ),
+        ),
+    )
+    before = len(chat_service.memory_service.list_memories(include_archived=True))
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Don't remember this"})
+
+    after = len(chat_service.memory_service.list_memories(include_archived=True))
+    assert response.status_code == 200
+    assert "won't save anything from this exchange" in response.json()["reply"]
+    assert before == after
+
+
+def test_session_private_mode_disables_memory_across_turns(monkeypatch, tmp_path):
+    chat_service = build_chat_service(
+        tmp_path,
+        StubOpenAIService(
+            "Reply.",
+            extraction=MemoryExtractionResult(
+                memory_updates=[
+                    {
+                        "action": "create",
+                        "type": "preference",
+                        "content": "User wants detailed explanations.",
+                        "confidence": 0.9,
+                        "reason": "Explicit request.",
+                    }
+                ],
+                ignored=[],
+            ),
+        ),
+    )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        disabled = client.post(
+            "/memory/disable",
+            json={"session_id": "private-1"},
+        )
+        response = client.post(
+            "/chat",
+            json={
+                "message": "I want more detailed explanations.",
+                "session_id": "private-1",
+            },
+        )
+        enabled = client.post(
+            "/memory/enable",
+            json={"session_id": "private-1"},
+        )
+
+    assert disabled.status_code == 200
+    assert response.status_code == 200
+    assert enabled.status_code == 200
+    assert not any(
+        "more detailed explanations" in memory.content.lower()
+        for memory in chat_service.memory_service.list_memories(include_archived=True)
+    )
+
+
+def test_sensitive_memory_requires_confirmation_before_saving(monkeypatch, tmp_path):
+    chat_service = build_chat_service(
+        tmp_path,
+        StubOpenAIService(
+            "Reply.",
+            extraction=MemoryExtractionResult(
+                memory_updates=[
+                    {
+                        "action": "create",
+                        "type": "pattern",
+                        "content": "User reported possible breathing-related sleep concerns; avoid treating this as a routine sleep hygiene issue.",
+                        "confidence": 0.8,
+                        "sensitivity": "sensitive",
+                        "should_ask_user_before_saving": True,
+                        "reason": "Medical-adjacent safety note.",
+                    }
+                ],
+                ignored=[],
+            ),
+        ),
+    )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/chat",
+            json={
+                "message": "I wake up gasping.",
+                "session_id": "confirm-1",
+            },
+        )
+        second = client.post(
+            "/chat",
+            json={
+                "message": "yes",
+                "session_id": "confirm-1",
+            },
+        )
+
+    assert first.status_code == 200
+    assert "Do you want me to remember this for future sleep advice?" in first.json()["reply"]
+    assert second.status_code == 200
+    assert "saved that for future sleep advice" in second.json()["reply"]
 
 
 def test_normal_chat_response_hides_debug_metadata(monkeypatch, tmp_path):
@@ -552,3 +807,12 @@ def test_sensitive_crisis_details_are_not_saved_as_memory(monkeypatch, tmp_path)
         "want to die" not in memory.content.lower()
         for memory in chat_service.memory_service.list_memories(include_archived=True)
     )
+
+
+def test_memory_summary_does_not_expose_raw_json_or_ids(monkeypatch, tmp_path):
+    with TestClient(build_client(monkeypatch, tmp_path)) as client:
+        response = client.post("/chat", json={"message": "Show my memory."})
+
+    assert response.status_code == 200
+    assert '"id"' not in response.json()["reply"]
+    assert "{" not in response.json()["reply"]

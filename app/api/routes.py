@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.core.config import get_settings
 from app.models.chat import ChatRequest, ChatResponse, HealthResponse
+from app.models.memory_control import MemorySessionStateRecord, MemorySessionToggleRequest
 from app.models.memory import (
     MemoryCreateRequest,
     MemoryFeedbackRequest,
@@ -10,9 +11,15 @@ from app.models.memory import (
     MemoryUpdateRequest,
 )
 from app.repositories.memory_repository import MemoryRepository
+from app.repositories.advice_trace_repository import AdviceTraceRepository
+from app.repositories.pending_memory_confirmation_repository import (
+    PendingMemoryConfirmationRepository,
+)
+from app.repositories.session_state_repository import SessionStateRepository
 from app.services.chat_service import ChatService
 from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
+from app.services.memory_transparency_service import MemoryTransparencyService
 from app.services.openai_client import OpenAIResponseService
 from app.services.safety_classifier import SafetyClassifierService
 
@@ -35,11 +42,21 @@ def get_chat_service(
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
 ) -> ChatService:
     settings = get_settings()
+    memory_transparency_service = MemoryTransparencyService(
+        memory_service=memory_service,
+        knowledge_service=knowledge_service,
+        advice_trace_repository=AdviceTraceRepository(settings.database_path),
+        session_state_repository=SessionStateRepository(settings.database_path),
+        pending_confirmation_repository=PendingMemoryConfirmationRepository(
+            settings.database_path
+        ),
+    )
     return ChatService(
         memory_service=memory_service,
         knowledge_service=knowledge_service,
         openai_service=OpenAIResponseService(settings),
         safety_classifier=SafetyClassifierService(),
+        memory_transparency_service=memory_transparency_service,
         debug_metadata_allowed=settings.debug_metadata_allowed,
     )
 
@@ -57,6 +74,7 @@ def chat(
     return chat_service.generate_reply(
         message=payload.message,
         history=payload.history,
+        session_id=payload.session_id,
         include_debug=payload.include_debug,
     )
 
@@ -101,3 +119,41 @@ def feedback_memory(
     memory_service: MemoryService = Depends(get_memory_service),
 ) -> MemoryRecord:
     return memory_service.apply_feedback(payload.memory_id, payload.feedback)
+
+
+@router.post("/memory/disable", response_model=MemorySessionStateRecord)
+def disable_memory(
+    payload: MemorySessionToggleRequest,
+) -> MemorySessionStateRecord:
+    settings = get_settings()
+    memory_service = get_memory_service()
+    knowledge_service = get_knowledge_service()
+    service = MemoryTransparencyService(
+        memory_service=memory_service,
+        knowledge_service=knowledge_service,
+        advice_trace_repository=AdviceTraceRepository(settings.database_path),
+        session_state_repository=SessionStateRepository(settings.database_path),
+        pending_confirmation_repository=PendingMemoryConfirmationRepository(
+            settings.database_path
+        ),
+    )
+    return service.set_memory_disabled_for_session(payload.session_id, enabled=False)
+
+
+@router.post("/memory/enable", response_model=MemorySessionStateRecord)
+def enable_memory(
+    payload: MemorySessionToggleRequest,
+) -> MemorySessionStateRecord:
+    settings = get_settings()
+    memory_service = get_memory_service()
+    knowledge_service = get_knowledge_service()
+    service = MemoryTransparencyService(
+        memory_service=memory_service,
+        knowledge_service=knowledge_service,
+        advice_trace_repository=AdviceTraceRepository(settings.database_path),
+        session_state_repository=SessionStateRepository(settings.database_path),
+        pending_confirmation_repository=PendingMemoryConfirmationRepository(
+            settings.database_path
+        ),
+    )
+    return service.set_memory_disabled_for_session(payload.session_id, enabled=True)

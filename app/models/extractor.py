@@ -10,6 +10,8 @@ class MemoryUpdateProposal(BaseModel):
     type: MemoryType | None = None
     content: str | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    sensitivity: Literal["normal", "sensitive", "crisis"] = "normal"
+    should_ask_user_before_saving: bool = False
     reason: str
     target_memory_id: str | None = None
     related_memory_id: str | None = None
@@ -23,4 +25,5 @@ class IgnoredMemoryCandidate(BaseModel):
 
 class MemoryExtractionResult(BaseModel):
     memory_updates: list[MemoryUpdateProposal]
+    skip_memory: bool = False
     ignored: list[IgnoredMemoryCandidate] = Field(default_factory=list)

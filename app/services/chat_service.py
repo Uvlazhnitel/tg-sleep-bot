@@ -5,6 +5,7 @@ from app.core.exceptions import UpstreamServiceError
 from app.models.chat import ChatDebugMetadata, ChatResponse, HistoryMessage
 from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
+from app.services.memory_transparency_service import MemoryTransparencyService
 from app.services.openai_client import OpenAIResponseService
 from app.services.safety_classifier import SafetyClassifierService
 
@@ -18,25 +19,45 @@ class ChatService:
         knowledge_service: KnowledgeService,
         openai_service: OpenAIResponseService,
         safety_classifier: SafetyClassifierService,
+        memory_transparency_service: MemoryTransparencyService,
         debug_metadata_allowed: bool = False,
     ) -> None:
         self.memory_service = memory_service
         self.knowledge_service = knowledge_service
         self.openai_service = openai_service
         self.safety_classifier = safety_classifier
+        self.memory_transparency_service = memory_transparency_service
         self.debug_metadata_allowed = debug_metadata_allowed
 
     def generate_reply(
         self,
         message: str,
         history: list[HistoryMessage],
+        session_id: str | None = None,
         include_debug: bool = False,
     ) -> ChatResponse:
-        intent_reply = self._handle_memory_intent(message)
+        session_key = self.memory_transparency_service.normalize_session_id(session_id)
+        memory_enabled_for_session = self.memory_transparency_service.is_memory_enabled_for_session(
+            session_key
+        )
+
+        pending_reply = self._handle_pending_confirmation(message, session_key)
+        if pending_reply is not None:
+            return ChatResponse(reply=pending_reply)
+
+        intent_reply = self._handle_memory_intent(
+            message,
+            session_key,
+            memory_enabled=memory_enabled_for_session,
+        )
         if intent_reply is not None:
             return ChatResponse(reply=intent_reply)
 
-        feedback_reply = self._handle_feedback_intent(message, history)
+        feedback_reply = self._handle_feedback_intent(
+            message,
+            history,
+            memory_enabled=memory_enabled_for_session,
+        )
         if feedback_reply is not None:
             return ChatResponse(reply=feedback_reply)
 
@@ -61,20 +82,41 @@ class ChatService:
             safety_classification=safety_classification,
         )
         self.memory_service.mark_memories_used(relevant_memories)
+        self.memory_transparency_service.store_advice_trace(
+            session_id=session_key,
+            user_message=message,
+            assistant_reply=reply,
+            source_memory_ids=[memory.id for memory in relevant_memories],
+            knowledge_card_ids=[card.id for card in relevant_knowledge_cards],
+            safety_category=safety_classification.category,
+        )
 
-        if safety_classification.category != "D":
+        if memory_enabled_for_session and safety_classification.category != "D":
             try:
                 extraction = self.openai_service.extract_memory_updates(
                     user_message=message,
                     assistant_reply=reply,
                     relevant_memories=relevant_memories,
                 )
-                extraction = self.memory_service.restrict_extraction_for_safety(
-                    extraction,
-                    safety_classification,
-                )
-                validated = self.memory_service.validate_extraction_result(extraction)
-                self.memory_service.apply_memory_updates(validated)
+                if extraction.skip_memory:
+                    extraction = self.memory_service.validate_extraction_result(extraction)
+                else:
+                    extraction = self.memory_service.restrict_extraction_for_safety(
+                        extraction,
+                        safety_classification,
+                    )
+                    extraction, sensitive_extraction = self.memory_transparency_service.split_sensitive_updates(
+                        extraction
+                    )
+                    validated = self.memory_service.validate_extraction_result(extraction)
+                    self.memory_service.apply_memory_updates(validated)
+                    if sensitive_extraction is not None and sensitive_extraction.memory_updates:
+                        pending = self.memory_transparency_service.create_pending_confirmation(
+                            session_key,
+                            sensitive_extraction,
+                        )
+                        return ChatResponse(reply=f"{reply}\n\n{pending.prompt_text}")
+                    extraction = validated
             except UpstreamServiceError as exc:
                 logger.warning("Memory extraction skipped: %s", exc)
 
@@ -93,30 +135,46 @@ class ChatService:
 
         return ChatResponse(reply=reply, debug=debug)
 
-    def _handle_memory_intent(self, message: str) -> str | None:
-        lowered = message.strip().lower()
-        if "what do you remember about me" in lowered or lowered in {"/memory", "show memory"}:
-            return self.memory_service.render_memory_summary()
-
-        forget_match = re.match(r"^(forget(?: that)?)(?P<content>.+)$", lowered)
-        if forget_match:
-            archived = self.memory_service.archive_by_text(forget_match.group("content"))
-            if archived is None:
-                return "I could not confidently find a matching memory to forget."
-            return f"I forgot this memory: {archived.content}"
-
-        goal_match = re.search(
-            r"(?:change|set) my wake[ -]?up goal to (?P<time>\d{1,2}:\d{2})",
-            lowered,
-        )
-        if goal_match:
-            memory = self.memory_service.update_goal(goal_match.group("time"))
-            return f"Updated your wake-up goal: {memory.content}"
+    def _handle_memory_intent(
+        self,
+        message: str,
+        session_id: str,
+        memory_enabled: bool,
+    ) -> str | None:
+        intent = self.memory_transparency_service.detect_intent(message)
+        if intent.intent_type == "show_memory":
+            return self.memory_transparency_service.summarize_memories_for_user()
+        if intent.intent_type == "delete_memory" and intent.payload is not None:
+            return self.memory_transparency_service.handle_delete_request(intent.payload)
+        if intent.intent_type == "update_memory":
+            if not memory_enabled:
+                return "Okay — memory is off for this session, so I won't save that change."
+            return self.memory_transparency_service.handle_update_request(
+                intent.payload or message
+            )
+        if intent.intent_type == "explain_advice":
+            return self.memory_transparency_service.explain_last_advice(session_id)
+        if intent.intent_type == "disable_memory_for_turn":
+            return "Okay — I won't save anything from this exchange."
+        if intent.intent_type == "disable_memory_for_session":
+            self.memory_transparency_service.set_memory_disabled_for_session(
+                session_id,
+                enabled=False,
+            )
+            return "Okay — I turned memory off for this session."
+        if intent.intent_type == "enable_memory_for_session":
+            self.memory_transparency_service.set_memory_disabled_for_session(
+                session_id,
+                enabled=True,
+            )
+            return "Okay — memory is back on for this session."
 
         remember_request = self.memory_service.personalization.infer_preference_or_constraint(
             message
         )
         if remember_request is not None:
+            if not memory_enabled:
+                return "Okay — memory is off for this session, so I won't save that."
             memory = self.memory_service.create_memory(remember_request)
             return f"I'll remember that: {memory.content}"
 
@@ -126,6 +184,7 @@ class ChatService:
         self,
         message: str,
         history: list[HistoryMessage],
+        memory_enabled: bool,
     ) -> str | None:
         lowered = message.strip().lower()
         if lowered in {"don't remember that", "dont remember that"}:
@@ -140,6 +199,8 @@ class ChatService:
             return f"Okay, I won't keep this memory: {archived.content}"
 
         if "that helped" in lowered:
+            if not memory_enabled:
+                return "Okay — memory is off for this session, so I won't save that feedback."
             intervention = self._infer_recent_intervention(history)
             if intervention is None:
                 return "What part helped, so I can remember the useful bit?"
@@ -147,6 +208,8 @@ class ChatService:
             return f"Good to know. I'll remember that this helped: {memory.content}"
 
         if "that didn't work" in lowered or "that did not work" in lowered:
+            if not memory_enabled:
+                return "Okay — memory is off for this session, so I won't save that feedback."
             intervention = self._infer_recent_intervention(history)
             if intervention is None:
                 return "What part did not work, so I can avoid repeating the wrong thing?"
@@ -154,6 +217,8 @@ class ChatService:
             return f"Thanks, I'll avoid leaning on that next time: {memory.content}"
 
         if lowered.startswith("actually") or "that's wrong" in lowered or "that is wrong" in lowered:
+            if not memory_enabled:
+                return "Okay — memory is off for this session, so I won't save that correction."
             memories = self.memory_service.get_relevant_memories(message)
             best = self.memory_service.personalization.find_best_memory_match(message, memories)
             if best is None:
@@ -163,6 +228,34 @@ class ChatService:
                 return f"Thanks for correcting me. I archived that memory: {updated.content}"
             return f"Thanks for correcting me. I'll treat that as less reliable: {updated.content}"
 
+        return None
+
+    def _handle_pending_confirmation(
+        self,
+        message: str,
+        session_id: str,
+    ) -> str | None:
+        pending = self.memory_transparency_service.get_pending_confirmation(session_id)
+        if pending is None:
+            return None
+
+        lowered = message.strip().lower()
+        if lowered in {"yes", "yes remember that", "yes save that", "save it", "remember it"}:
+            return self.memory_transparency_service.resolve_pending_confirmation(
+                session_id,
+                accept=True,
+            )
+        if lowered in {
+            "no",
+            "no do not save that",
+            "don't save that",
+            "dont save that",
+            "no thanks",
+        }:
+            return self.memory_transparency_service.resolve_pending_confirmation(
+                session_id,
+                accept=False,
+            )
         return None
 
     @staticmethod

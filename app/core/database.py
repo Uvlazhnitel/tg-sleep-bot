@@ -26,6 +26,41 @@ ON memories (user_id, is_archived);
 
 CREATE INDEX IF NOT EXISTS idx_memories_user_type
 ON memories (user_id, type);
+
+CREATE TABLE IF NOT EXISTS advice_traces (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    user_message TEXT NOT NULL,
+    assistant_reply TEXT NOT NULL,
+    source_memory_ids_json TEXT NOT NULL,
+    knowledge_card_ids_json TEXT NOT NULL,
+    safety_category TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_advice_traces_user_session_created
+ON advice_traces (user_id, session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS memory_session_state (
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    memory_enabled INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS pending_memory_confirmations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    memory_updates_json TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_memory_confirmations_user_session_created
+ON pending_memory_confirmations (user_id, session_id, created_at DESC);
 """
 
 MEMORY_MIGRATIONS: tuple[tuple[str, str], ...] = (

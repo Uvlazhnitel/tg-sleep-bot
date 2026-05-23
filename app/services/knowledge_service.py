@@ -57,6 +57,12 @@ class KnowledgeService:
                 return card
         return None
 
+    def get_knowledge_card_by_id(self, card_id: str) -> KnowledgeCard | None:
+        for card in self.list_knowledge_cards():
+            if card.id == card_id:
+                return card
+        return None
+
     def get_relevant_knowledge_cards(
         self,
         message: str,

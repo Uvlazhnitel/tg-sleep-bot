@@ -59,6 +59,9 @@ class MemoryService:
     def list_memories(self, include_archived: bool = False) -> list[MemoryRecord]:
         return self.repository.list_memories(self.user_id, include_archived=include_archived)
 
+    def get_memory(self, memory_id: str) -> MemoryRecord:
+        return self.repository.get_memory(memory_id, self.user_id)
+
     def get_relevant_memories(self, message: str) -> list[MemoryRecord]:
         memories = self.repository.get_relevant_memories(self.user_id, message)
         return self.personalization.rank_memories(memories, message)
@@ -173,14 +176,35 @@ class MemoryService:
             )
         return "\n".join(lines)
 
+    def get_memories_by_ids(self, memory_ids: list[str]) -> list[MemoryRecord]:
+        if not memory_ids:
+            return []
+        memory_map = {
+            memory.id: memory
+            for memory in self.list_memories(include_archived=True)
+        }
+        return [memory_map[memory_id] for memory_id in memory_ids if memory_id in memory_map]
+
     def validate_extraction_result(
         self, extraction: MemoryExtractionResult
     ) -> MemoryExtractionResult:
+        if extraction.skip_memory:
+            return MemoryExtractionResult(memory_updates=[], skip_memory=True, ignored=extraction.ignored)
+
         valid_updates: list[MemoryUpdateProposal] = []
         ignored = list(extraction.ignored)
         current_ids = {memory.id for memory in self.list_memories(include_archived=True)}
 
         for proposal in extraction.memory_updates:
+            if proposal.sensitivity == "crisis":
+                ignored.append(
+                    {
+                        "content": proposal.content or "",
+                        "reason": "Crisis content should not be stored as ordinary memory.",
+                    }
+                )
+                continue
+
             if proposal.action == "none":
                 valid_updates.append(proposal)
                 continue
@@ -232,6 +256,7 @@ class MemoryService:
         try:
             return MemoryExtractionResult(
                 memory_updates=valid_updates,
+                skip_memory=extraction.skip_memory,
                 ignored=ignored,
             )
         except ValidationError as exc:
@@ -306,7 +331,11 @@ class MemoryService:
         safety: SafetyClassification,
     ) -> MemoryExtractionResult:
         if safety.category == "D":
-            return MemoryExtractionResult(memory_updates=[], ignored=extraction.ignored)
+            return MemoryExtractionResult(
+                memory_updates=[],
+                skip_memory=extraction.skip_memory,
+                ignored=extraction.ignored,
+            )
 
         if safety.category != "C":
             return extraction
@@ -335,7 +364,11 @@ class MemoryService:
                 in proposal.content.lower()
             ):
                 allowed_updates.append(proposal)
-        return MemoryExtractionResult(memory_updates=allowed_updates, ignored=ignored)
+        return MemoryExtractionResult(
+            memory_updates=allowed_updates,
+            skip_memory=extraction.skip_memory,
+            ignored=ignored,
+        )
 
     @staticmethod
     def _looks_temporary(content: str) -> bool:
