@@ -4,7 +4,7 @@ Personal sleep assistant chatbot focused on helping a single user wake up every 
 
 ## Current status
 
-This repository now includes a Phase 6 backend prototype:
+This repository now includes a Phase 7 backend prototype:
 
 - Python 3.13 + FastAPI HTTP service
 - `POST /chat` endpoint backed by the OpenAI Responses API
@@ -13,6 +13,7 @@ This repository now includes a Phase 6 backend prototype:
 - lightweight personalization that adapts to what helped or did not help
 - deterministic safety layer for red flags, medical boundaries, and crisis routing
 - transparent memory controls, private mode, and advice explanations
+- lightweight insights and experiment suggestions from saved memory plus non-private chat traces
 - fixed user goal plus editable preferences and patterns
 - no Telegram adapter yet
 
@@ -26,6 +27,7 @@ The assistant is designed to be:
 - personalized without requiring daily reports
 - safety-first when red flags are present
 - explicit about what it remembers and why
+- capable of occasional lightweight analytics without becoming a tracker
 - ready for later deeper analytics or integrations
 
 ## Project structure
@@ -314,6 +316,7 @@ When memory is off for a session:
 - the assistant still answers normally
 - new memories are not saved
 - pending sensitive-memory confirmations are not created
+- private-mode traces are not used later for insight generation
 
 ## Advice explanations
 
@@ -331,6 +334,61 @@ The explanation can mention:
 - safety context if that changed the advice
 
 It does not expose raw prompts, internal JSON, or classifier output.
+
+## Lightweight insights
+
+Phase 7 adds occasional pattern insights without turning the product into a tracker.
+
+What lightweight analytics means here:
+
+- the bot only uses information the user already volunteered
+- it combines saved memory, worked-before and did-not-work signals, hypotheses, and recent non-private advice traces
+- it can summarize patterns on request or occasionally surface one proactive insight
+- it stays focused on one small experiment instead of logs, charts, or dashboards
+
+Manual insight prompts include:
+
+- `What patterns do you notice?`
+- `Do you see any sleep patterns?`
+- `What have you learned about my sleep?`
+- `Why am I struggling to wake at 9?`
+- `What should I experiment with this week?`
+
+Insight confidence levels are intentionally simple:
+
+- high: repeated explicit evidence or direct confirmation
+- medium: several related signals
+- low: weak evidence and should be treated as a hypothesis
+
+Proactive insight rules:
+
+- never after every message
+- at most once per week by default
+- skipped during private mode
+- skipped when safety concerns should take priority
+- skipped when there is not enough meaningful evidence
+
+Natural-language insight controls include:
+
+- `Don't give me proactive insights.`
+- `Turn insights back on.`
+- `Dismiss this insight.`
+- `Forget this insight.`
+- `Save this as a pattern.`
+- `This insight is wrong.`
+- `That experiment helped.`
+- `That experiment did not help.`
+- `Why do you think that?`
+- `What evidence do you have?`
+- `How confident are you?`
+
+Experiment feedback updates memory naturally:
+
+- `That experiment helped.` strengthens `worked_before`
+- `That experiment did not help.` strengthens `did_not_work`
+- saving an insight as a pattern can create or reinforce a durable `pattern` memory
+
+Normal insight explanations stay in plain language and do not expose raw JSON or internal ids.
 
 ## Sensitive memory handling
 
@@ -456,9 +514,9 @@ This bot is an informational sleep assistant, not a doctor. It can help with pra
 - recommend medication doses or medication changes
 - manage emergencies beyond directing the user to immediate help
 
-## Phase 6 limitations
+## Phase 7 limitations
 
-Phase 6 intentionally does not include:
+Phase 7 intentionally still does not include:
 
 - Telegram integration
 - vector search or embeddings
@@ -470,7 +528,7 @@ Phase 6 intentionally does not include:
 - advanced analytics dashboards
 - wearable integrations
 
-Natural-language memory editing is heuristic and may not always identify the right memory on the first try. Ambiguous changes may require clarification. Advice explanations are based on recent stored trace metadata and may be limited for older messages. This is not a medical record system. The safety classifier is not a medical diagnosis tool. It may miss subtle red flags, and it may sometimes be cautious. Crisis and medical resource localization is still generic and should be improved later. Pattern detection is still simple and may be imperfect. Low-confidence memories are treated as hypotheses, and the user can correct or delete memories at any time.
+Natural-language memory editing is heuristic and may not always identify the right memory on the first try. Ambiguous changes may require clarification. Advice explanations are based on recent stored trace metadata and may be limited for older messages. Insight detection is approximate and only as good as the evidence the user voluntarily shared. This is not a medical record system. Insights are not medical conclusions. The safety classifier is not a medical diagnosis tool. It may miss subtle red flags, and it may sometimes be cautious. Crisis and medical resource localization is still generic and should be improved later. Pattern detection is still simple and may be imperfect. Low-confidence memories and low-confidence insights are treated as hypotheses, and the user can disable, correct, dismiss, archive, or delete them at any time.
 
 Conversation history is still client-supplied per request and is only used as a short context window.
 
@@ -502,6 +560,10 @@ Manual smoke scenarios to try:
 - asking `Why did you recommend that?` after a normal reply
 - turning memory off for a session and confirming nothing new is saved
 - sensitive memory proposal that should ask for consent before saving
+- asking `What patterns do you notice?`
+- opting out of proactive insights
+- dismissing an insight and confirming it does not keep resurfacing
+- saying `That experiment helped.` or `That experiment did not help.`
 
 ## Documents
 

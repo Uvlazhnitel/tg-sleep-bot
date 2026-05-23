@@ -4,7 +4,9 @@ from app.api.routes import get_chat_service
 from app.core.config import get_settings
 from app.main import create_app
 from app.models.extractor import MemoryExtractionResult
+from app.models.insight import InsightGenerationResult, InsightPreferenceUpdateRequest
 from app.repositories.advice_trace_repository import AdviceTraceRepository
+from app.repositories.insight_repository import InsightRepository
 from app.models.memory import MemoryCreateRequest
 from app.repositories.memory_repository import MemoryRepository
 from app.repositories.pending_memory_confirmation_repository import (
@@ -13,6 +15,7 @@ from app.repositories.pending_memory_confirmation_repository import (
 from app.repositories.session_state_repository import SessionStateRepository
 from app.services.chat_service import ChatService
 from app.services.knowledge_service import KnowledgeService
+from app.services.insight_service import InsightService
 from app.services.memory_service import MemoryService
 from app.services.memory_transparency_service import MemoryTransparencyService
 from app.services.safety_classifier import SafetyClassifierService
@@ -23,11 +26,17 @@ class StubOpenAIService:
         self,
         reply: str = "Test reply",
         extraction: MemoryExtractionResult | None = None,
+        insight_generation: InsightGenerationResult | None = None,
     ):
         self.reply = reply
         self.extraction = extraction or MemoryExtractionResult(
             memory_updates=[],
             ignored=[],
+        )
+        self.insight_generation = insight_generation or InsightGenerationResult(
+            should_create_insight=False,
+            insights=[],
+            reason_if_none="Not enough evidence.",
         )
         self.last_memories = []
         self.last_knowledge_cards = []
@@ -51,6 +60,18 @@ class StubOpenAIService:
 
     def extract_memory_updates(self, user_message, assistant_reply, relevant_memories):
         return self.extraction
+
+    def generate_insight_candidates(
+        self,
+        user_message,
+        history,
+        recent_traces,
+        memories,
+        relevant_knowledge_cards,
+        last_insight_at,
+        max_candidates,
+    ):
+        return self.insight_generation
 
 
 class FailingExtractorOpenAIService(StubOpenAIService):
@@ -86,12 +107,20 @@ def build_chat_service(tmp_path, openai_service, *, debug_metadata_allowed=False
         session_state_repository=SessionStateRepository(database_path),
         pending_confirmation_repository=PendingMemoryConfirmationRepository(database_path),
     )
+    insight_service = InsightService(
+        memory_service=memory_service,
+        knowledge_service=knowledge_service,
+        openai_service=openai_service,
+        advice_trace_repository=AdviceTraceRepository(database_path),
+        insight_repository=InsightRepository(database_path),
+    )
     return ChatService(
         memory_service=memory_service,
         knowledge_service=knowledge_service,
         openai_service=openai_service,
         safety_classifier=SafetyClassifierService(),
         memory_transparency_service=transparency_service,
+        insight_service=insight_service,
         debug_metadata_allowed=debug_metadata_allowed,
     )
 
@@ -376,6 +405,322 @@ def test_change_wake_goal_updates_fixed_goal(monkeypatch, tmp_path):
         memory.type == "fixed_goal" and "08:30" in memory.content
         for memory in chat_service.memory_service.list_memories()
     )
+
+
+def test_manual_insights_request_returns_pattern_summary(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Reply.",
+        insight_generation=InsightGenerationResult(
+            should_create_insight=True,
+            insights=[
+                {
+                    "title": "Multiple alarms may reinforce snoozing",
+                    "summary": "Multiple alarms seem to make snoozing easier for you.",
+                    "evidence": [
+                        "You have mentioned snoozing several times.",
+                        "Many alarms did not help."
+                    ],
+                    "confidence": "high",
+                    "suggested_experiment": "For the next 3 mornings, use one main alarm at 09:00 and one backup at 09:10 only."
+                }
+            ],
+            reason_if_none="",
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    chat_service.memory_service.create_memory(
+        MemoryCreateRequest(
+            type="did_not_work",
+            content="Many alarms did not help.",
+            confidence=0.9,
+            source="manual",
+        )
+    )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "What patterns do you notice?"})
+
+    assert response.status_code == 200
+    assert "strongest one" in response.json()["reply"].lower()
+    assert "best experiment for this week" in response.json()["reply"].lower()
+    assert "09:00" in response.json()["reply"]
+
+
+def test_low_confidence_manual_insight_is_presented_as_hypothesis(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Reply.",
+        insight_generation=InsightGenerationResult(
+            should_create_insight=True,
+            insights=[
+                {
+                    "title": "Late caffeine may affect sleep",
+                    "summary": "Late caffeine may be affecting your sleep, but I would treat it as a hypothesis for now.",
+                    "evidence": [
+                        "You mentioned caffeine once.",
+                        "A related knowledge card says caffeine can affect sleep."
+                    ],
+                    "confidence": "low",
+                    "suggested_experiment": "Move evening caffeine earlier for a few days and keep the 09:00 wake time steady."
+                }
+            ],
+            reason_if_none="",
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Do you see any sleep patterns?"})
+
+    assert response.status_code == 200
+    assert "possible hypothesis" in response.json()["reply"].lower()
+    assert "hypothesis" in response.json()["reply"].lower()
+
+
+def test_disable_proactive_insights_prevents_generation(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Keep 09:00 tomorrow.",
+        insight_generation=InsightGenerationResult(
+            should_create_insight=True,
+            insights=[
+                {
+                    "title": "Multiple alarms may reinforce snoozing",
+                    "summary": "Multiple alarms seem to make snoozing easier for you.",
+                    "evidence": [
+                        "You mentioned snoozing repeatedly.",
+                        "Many alarms did not help."
+                    ],
+                    "confidence": "high",
+                    "suggested_experiment": "For the next 3 mornings, use one main alarm at 09:00 and one backup at 09:10 only."
+                }
+            ],
+            reason_if_none="",
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    trace_repo = AdviceTraceRepository(str(tmp_path / "api.db"))
+    for index in range(5):
+        trace_repo.create_trace(
+            user_id="default_user",
+            session_id="s1",
+            user_message=f"I snoozed again {index}",
+            assistant_reply="Reply.",
+            source_memory_ids=[],
+            knowledge_card_ids=[],
+            safety_category="A",
+            is_private_mode=False,
+        )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        disabled = client.post("/chat", json={"message": "Don't give me proactive insights."})
+        response = client.post("/chat", json={"message": "I snoozed again and feel groggy."})
+
+    assert disabled.status_code == 200
+    assert response.status_code == 200
+    assert "One useful pattern" not in response.json()["reply"]
+
+
+def test_turn_insights_back_on_allows_proactive_generation(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Keep 09:00 tomorrow.",
+        insight_generation=InsightGenerationResult(
+            should_create_insight=True,
+            insights=[
+                {
+                    "title": "Multiple alarms may reinforce snoozing",
+                    "summary": "Multiple alarms seem to make snoozing easier for you.",
+                    "evidence": [
+                        "You mentioned snoozing repeatedly.",
+                        "Many alarms did not help."
+                    ],
+                    "confidence": "high",
+                    "suggested_experiment": "For the next 3 mornings, use one main alarm at 09:00 and one backup at 09:10 only."
+                }
+            ],
+            reason_if_none="",
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    trace_repo = AdviceTraceRepository(str(tmp_path / "api.db"))
+    for index in range(5):
+        trace_repo.create_trace(
+            user_id="default_user",
+            session_id="s1",
+            user_message=f"I snoozed again {index}",
+            assistant_reply="Reply.",
+            source_memory_ids=[],
+            knowledge_card_ids=[],
+            safety_category="A",
+            is_private_mode=False,
+    )
+    chat_service.insight_service.update_preferences(
+        InsightPreferenceUpdateRequest(proactive_insights_enabled=False)
+    )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        enabled = client.post("/chat", json={"message": "Turn insights back on."})
+        response = client.post("/chat", json={"message": "I snoozed again and feel groggy."})
+
+    assert enabled.status_code == 200
+    assert response.status_code == 200
+    assert "One useful pattern" in response.json()["reply"]
+
+
+def test_private_mode_messages_are_not_used_for_insights(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Reply.",
+        insight_generation=InsightGenerationResult(
+            should_create_insight=False,
+            insights=[],
+            reason_if_none="Not enough evidence.",
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        client.post("/memory/disable", json={"session_id": "private-1"})
+        client.post(
+            "/chat",
+            json={"message": "I snoozed again.", "session_id": "private-1"},
+        )
+        traces = AdviceTraceRepository(str(tmp_path / "api.db")).list_recent_traces(
+            "default_user",
+            include_private=False,
+        )
+
+    assert traces == []
+
+
+def test_safety_red_flag_content_is_not_turned_into_casual_insight(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Please speak to a healthcare professional.",
+        insight_generation=InsightGenerationResult(
+            should_create_insight=True,
+            insights=[
+                {
+                    "title": "Possible sleep apnea pattern",
+                    "summary": "You likely have sleep apnea.",
+                    "evidence": ["You wake up gasping."],
+                    "confidence": "medium",
+                    "suggested_experiment": "Track this daily."
+                }
+            ],
+            reason_if_none="",
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "I wake up gasping at night."})
+
+    assert response.status_code == 200
+    assert "One useful pattern" not in response.json()["reply"]
+
+
+def test_experiment_feedback_updates_worked_before_memory(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Reply.",
+        insight_generation=InsightGenerationResult(
+            should_create_insight=True,
+            insights=[
+                {
+                    "title": "Morning light may help",
+                    "summary": "Morning light may make it easier for you to wake at 09:00.",
+                    "evidence": [
+                        "You mentioned groggy mornings.",
+                        "Morning light is supported by a knowledge card."
+                    ],
+                    "confidence": "medium",
+                    "suggested_experiment": "Try getting bright light within 10 minutes of waking for the next 3 mornings."
+                }
+            ],
+            reason_if_none="",
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        first = client.post("/chat", json={"message": "What should I experiment with this week?"})
+        second = client.post("/chat", json={"message": "That experiment helped."})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert any(
+        memory.type == "worked_before" and "bright light" in memory.content.lower()
+        for memory in chat_service.memory_service.list_memories(include_archived=True)
+    )
+
+
+def test_dismissed_insight_is_not_repeatedly_shown(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Reply.",
+        insight_generation=InsightGenerationResult(
+            should_create_insight=True,
+            insights=[
+                {
+                    "title": "Multiple alarms may reinforce snoozing",
+                    "summary": "Multiple alarms seem to make snoozing easier for you.",
+                    "evidence": [
+                        "You mentioned snoozing repeatedly.",
+                        "Many alarms did not help."
+                    ],
+                    "confidence": "high",
+                    "suggested_experiment": "For the next 3 mornings, use one main alarm at 09:00 and one backup at 09:10 only."
+                }
+            ],
+            reason_if_none="",
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        first = client.post("/chat", json={"message": "What patterns do you notice?"})
+        dismiss = client.post("/chat", json={"message": "Dismiss this insight."})
+        third = client.post("/chat", json={"message": "Why do you think that?"})
+
+    assert first.status_code == 200
+    assert dismiss.status_code == 200
+    assert third.status_code == 200
+    assert "specific advice" in third.json()["reply"].lower() or "recent insight" in third.json()["reply"].lower()
+
+
+def test_why_do_you_think_that_explains_insight_evidence(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Reply.",
+        insight_generation=InsightGenerationResult(
+            should_create_insight=True,
+            insights=[
+                {
+                    "title": "Multiple alarms may reinforce snoozing",
+                    "summary": "Multiple alarms seem to make snoozing easier for you.",
+                    "evidence": [
+                        "You have mentioned snoozing several times.",
+                        "Many alarms did not help."
+                    ],
+                    "confidence": "high",
+                    "suggested_experiment": "For the next 3 mornings, use one main alarm at 09:00 and one backup at 09:10 only."
+                }
+            ],
+            reason_if_none="",
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        client.post("/chat", json={"message": "What patterns do you notice?"})
+        response = client.post("/chat", json={"message": "Why do you think that?"})
+
+    assert response.status_code == 200
+    assert "because" in response.json()["reply"].lower()
+    assert "confident" in response.json()["reply"].lower() or "working pattern" in response.json()["reply"].lower()
 
 
 def test_why_did_you_recommend_that_uses_recent_trace(monkeypatch, tmp_path):

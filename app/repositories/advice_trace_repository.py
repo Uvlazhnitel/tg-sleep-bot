@@ -19,6 +19,7 @@ class AdviceTraceRepository:
         source_memory_ids: list[str],
         knowledge_card_ids: list[str],
         safety_category: str,
+        is_private_mode: bool = False,
     ) -> AdviceTraceRecord:
         trace_id = str(uuid.uuid4())
         created_at = utc_now_iso()
@@ -27,9 +28,10 @@ class AdviceTraceRepository:
                 """
                 INSERT INTO advice_traces (
                     id, user_id, session_id, user_message, assistant_reply,
-                    source_memory_ids_json, knowledge_card_ids_json, safety_category, created_at
+                    source_memory_ids_json, knowledge_card_ids_json, safety_category,
+                    is_private_mode, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trace_id,
@@ -40,6 +42,7 @@ class AdviceTraceRepository:
                     json.dumps(source_memory_ids),
                     json.dumps(knowledge_card_ids),
                     safety_category,
+                    int(is_private_mode),
                     created_at,
                 ),
             )
@@ -65,6 +68,27 @@ class AdviceTraceRepository:
             return None
         return self._row_to_trace(row)
 
+    def list_recent_traces(
+        self,
+        user_id: str,
+        *,
+        include_private: bool = False,
+        since_iso: str | None = None,
+        limit: int = 20,
+    ) -> list[AdviceTraceRecord]:
+        query = "SELECT * FROM advice_traces WHERE user_id = ?"
+        params: list[object] = [user_id]
+        if not include_private:
+            query += " AND is_private_mode = 0"
+        if since_iso is not None:
+            query += " AND created_at >= ?"
+            params.append(since_iso)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with get_connection(self.database_path) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [self._row_to_trace(row) for row in rows]
+
     @staticmethod
     def _row_to_trace(row) -> AdviceTraceRecord:
         return AdviceTraceRecord(
@@ -76,5 +100,6 @@ class AdviceTraceRepository:
             source_memory_ids=json.loads(row["source_memory_ids_json"]),
             knowledge_card_ids=json.loads(row["knowledge_card_ids_json"]),
             safety_category=row["safety_category"],
+            is_private_mode=bool(row["is_private_mode"]),
             created_at=row["created_at"],
         )

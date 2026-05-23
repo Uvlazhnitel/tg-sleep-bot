@@ -2,6 +2,13 @@ from fastapi import APIRouter, Depends, Query
 
 from app.core.config import get_settings
 from app.models.chat import ChatRequest, ChatResponse, HealthResponse
+from app.models.insight import (
+    InsightPreferenceRecord,
+    InsightPreferenceUpdateRequest,
+    InsightRecord,
+    InsightSummaryResponse,
+    InsightUpdateRequest,
+)
 from app.models.memory_control import MemorySessionStateRecord, MemorySessionToggleRequest
 from app.models.memory import (
     MemoryCreateRequest,
@@ -12,12 +19,14 @@ from app.models.memory import (
 )
 from app.repositories.memory_repository import MemoryRepository
 from app.repositories.advice_trace_repository import AdviceTraceRepository
+from app.repositories.insight_repository import InsightRepository
 from app.repositories.pending_memory_confirmation_repository import (
     PendingMemoryConfirmationRepository,
 )
 from app.repositories.session_state_repository import SessionStateRepository
 from app.services.chat_service import ChatService
 from app.services.knowledge_service import KnowledgeService
+from app.services.insight_service import InsightService
 from app.services.memory_service import MemoryService
 from app.services.memory_transparency_service import MemoryTransparencyService
 from app.services.openai_client import OpenAIResponseService
@@ -51,13 +60,36 @@ def get_chat_service(
             settings.database_path
         ),
     )
+    openai_service = OpenAIResponseService(settings)
+    insight_service = InsightService(
+        memory_service=memory_service,
+        knowledge_service=knowledge_service,
+        openai_service=openai_service,
+        advice_trace_repository=AdviceTraceRepository(settings.database_path),
+        insight_repository=InsightRepository(settings.database_path),
+    )
     return ChatService(
         memory_service=memory_service,
         knowledge_service=knowledge_service,
-        openai_service=OpenAIResponseService(settings),
+        openai_service=openai_service,
         safety_classifier=SafetyClassifierService(),
         memory_transparency_service=memory_transparency_service,
+        insight_service=insight_service,
         debug_metadata_allowed=settings.debug_metadata_allowed,
+    )
+
+
+def get_insight_service(
+    memory_service: MemoryService = Depends(get_memory_service),
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+) -> InsightService:
+    settings = get_settings()
+    return InsightService(
+        memory_service=memory_service,
+        knowledge_service=knowledge_service,
+        openai_service=OpenAIResponseService(settings),
+        advice_trace_repository=AdviceTraceRepository(settings.database_path),
+        insight_repository=InsightRepository(settings.database_path),
     )
 
 
@@ -157,3 +189,35 @@ def enable_memory(
         ),
     )
     return service.set_memory_disabled_for_session(payload.session_id, enabled=True)
+
+
+@router.get("/insights", response_model=InsightSummaryResponse)
+def list_insights(
+    include_archived: bool = Query(default=False),
+    insight_service: InsightService = Depends(get_insight_service),
+) -> InsightSummaryResponse:
+    return InsightSummaryResponse(
+        insights=insight_service.list_insights(include_archived=include_archived)
+    )
+
+
+@router.patch("/insights/{insight_id}", response_model=InsightRecord)
+def update_insight(
+    insight_id: str,
+    payload: InsightUpdateRequest,
+    insight_service: InsightService = Depends(get_insight_service),
+) -> InsightRecord:
+    updated = insight_service.insight_repository.update_insight(
+        insight_id,
+        insight_service.memory_service.user_id,
+        payload,
+    )
+    return updated
+
+
+@router.post("/insights/preferences", response_model=InsightPreferenceRecord)
+def update_insight_preferences(
+    payload: InsightPreferenceUpdateRequest,
+    insight_service: InsightService = Depends(get_insight_service),
+) -> InsightPreferenceRecord:
+    return insight_service.update_preferences(payload)

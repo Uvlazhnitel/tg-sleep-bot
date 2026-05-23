@@ -5,12 +5,16 @@ from openai import OpenAI
 from app.core.config import Settings
 from app.core.exceptions import UpstreamServiceError
 from app.models.chat import HistoryMessage
+from app.models.insight import InsightGenerationResult
 from app.models.extractor import MemoryExtractionResult
 from app.models.knowledge import KnowledgeCard
+from app.models.memory_control import AdviceTraceRecord
 from app.models.memory import MemoryRecord
 from app.models.safety import SafetyClassification
 from app.services.prompt_builder import (
     build_assistant_instructions,
+    build_insight_generator_input,
+    build_insight_generator_instructions,
     build_memory_extractor_input,
     build_memory_extractor_instructions,
     build_phase1_input,
@@ -81,6 +85,40 @@ class OpenAIResponseService:
         parsed = getattr(response, "output_parsed", None)
         if not isinstance(parsed, MemoryExtractionResult):
             raise UpstreamServiceError("Memory extraction returned invalid structured output.")
+        return parsed
+
+    def generate_insight_candidates(
+        self,
+        user_message: str,
+        history: list[HistoryMessage],
+        recent_traces: list[AdviceTraceRecord],
+        memories: list[MemoryRecord],
+        relevant_knowledge_cards: list[KnowledgeCard],
+        last_insight_at: str | None,
+        max_candidates: int,
+    ) -> InsightGenerationResult:
+        instructions = build_insight_generator_instructions(max_candidates)
+        insight_input = build_insight_generator_input(
+            user_message=user_message,
+            history=history,
+            recent_traces=recent_traces,
+            memories=memories,
+            relevant_knowledge_cards=relevant_knowledge_cards,
+            last_insight_at=last_insight_at,
+        )
+        try:
+            response = self.client.responses.parse(
+                model=self.settings.openai_extractor_model,
+                instructions=instructions,
+                input=insight_input,
+                text_format=InsightGenerationResult,
+            )
+        except Exception as exc:  # pragma: no cover
+            raise UpstreamServiceError("Insight generation request failed.") from exc
+
+        parsed = getattr(response, "output_parsed", None)
+        if not isinstance(parsed, InsightGenerationResult):
+            raise UpstreamServiceError("Insight generation returned invalid structured output.")
         return parsed
 
     @staticmethod

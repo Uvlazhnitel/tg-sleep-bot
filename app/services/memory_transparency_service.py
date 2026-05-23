@@ -207,6 +207,7 @@ class MemoryTransparencyService:
         source_memory_ids: list[str],
         knowledge_card_ids: list[str],
         safety_category: str,
+        is_private_mode: bool = False,
     ) -> AdviceTraceRecord:
         return self.advice_trace_repository.create_trace(
             user_id=self.memory_service.user_id,
@@ -216,6 +217,7 @@ class MemoryTransparencyService:
             source_memory_ids=source_memory_ids,
             knowledge_card_ids=knowledge_card_ids,
             safety_category=safety_category,
+            is_private_mode=is_private_mode,
         )
 
     def explain_last_advice(self, session_id: str | None) -> str:

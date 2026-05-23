@@ -32,6 +32,7 @@ class AdviceTraceRecord(BaseModel):
     source_memory_ids: list[str]
     knowledge_card_ids: list[str]
     safety_category: str
+    is_private_mode: bool = False
     created_at: str
 
 

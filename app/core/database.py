@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS advice_traces (
     source_memory_ids_json TEXT NOT NULL,
     knowledge_card_ids_json TEXT NOT NULL,
     safety_category TEXT NOT NULL,
+    is_private_mode INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
@@ -61,6 +62,35 @@ CREATE TABLE IF NOT EXISTS pending_memory_confirmations (
 
 CREATE INDEX IF NOT EXISTS idx_pending_memory_confirmations_user_session_created
 ON pending_memory_confirmations (user_id, session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS insights (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    suggested_experiment TEXT NOT NULL,
+    related_memory_ids_json TEXT NOT NULL,
+    related_message_ids_json TEXT NOT NULL,
+    related_knowledge_card_ids_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_shown_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_insights_user_status_updated
+ON insights (user_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS insight_preferences (
+    user_id TEXT PRIMARY KEY,
+    proactive_insights_enabled INTEGER NOT NULL,
+    proactive_insight_frequency TEXT NOT NULL,
+    last_proactive_insight_at TEXT,
+    insight_min_evidence_threshold INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 MEMORY_MIGRATIONS: tuple[tuple[str, str], ...] = (
@@ -70,6 +100,13 @@ MEMORY_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("last_confirmed_at", "ALTER TABLE memories ADD COLUMN last_confirmed_at TEXT"),
     ("related_memory_id", "ALTER TABLE memories ADD COLUMN related_memory_id TEXT"),
     ("relation_type", "ALTER TABLE memories ADD COLUMN relation_type TEXT"),
+)
+
+ADVICE_TRACE_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    (
+        "is_private_mode",
+        "ALTER TABLE advice_traces ADD COLUMN is_private_mode INTEGER NOT NULL DEFAULT 0",
+    ),
 )
 
 
@@ -83,11 +120,19 @@ def initialize_database(database_path: str) -> None:
     Path(database_path).parent.mkdir(parents=True, exist_ok=True)
     with get_connection(database_path) as connection:
         connection.executescript(SCHEMA_SQL)
-        columns = {
+        memory_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(memories)").fetchall()
         }
         for column_name, statement in MEMORY_MIGRATIONS:
-            if column_name not in columns:
+            if column_name not in memory_columns:
+                connection.execute(statement)
+
+        advice_trace_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(advice_traces)").fetchall()
+        }
+        for column_name, statement in ADVICE_TRACE_MIGRATIONS:
+            if column_name not in advice_trace_columns:
                 connection.execute(statement)
         connection.commit()

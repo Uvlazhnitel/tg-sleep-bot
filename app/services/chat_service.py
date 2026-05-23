@@ -3,9 +3,11 @@ import re
 
 from app.core.exceptions import UpstreamServiceError
 from app.models.chat import ChatDebugMetadata, ChatResponse, HistoryMessage
+from app.models.insight import InsightPreferenceUpdateRequest
 from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
 from app.services.memory_transparency_service import MemoryTransparencyService
+from app.services.insight_service import InsightService
 from app.services.openai_client import OpenAIResponseService
 from app.services.safety_classifier import SafetyClassifierService
 
@@ -20,6 +22,7 @@ class ChatService:
         openai_service: OpenAIResponseService,
         safety_classifier: SafetyClassifierService,
         memory_transparency_service: MemoryTransparencyService,
+        insight_service: InsightService,
         debug_metadata_allowed: bool = False,
     ) -> None:
         self.memory_service = memory_service
@@ -27,6 +30,7 @@ class ChatService:
         self.openai_service = openai_service
         self.safety_classifier = safety_classifier
         self.memory_transparency_service = memory_transparency_service
+        self.insight_service = insight_service
         self.debug_metadata_allowed = debug_metadata_allowed
 
     def generate_reply(
@@ -44,6 +48,10 @@ class ChatService:
         pending_reply = self._handle_pending_confirmation(message, session_key)
         if pending_reply is not None:
             return ChatResponse(reply=pending_reply)
+
+        insight_reply = self._handle_insight_intent(message, history, session_key)
+        if insight_reply is not None:
+            return ChatResponse(reply=insight_reply)
 
         intent_reply = self._handle_memory_intent(
             message,
@@ -89,6 +97,7 @@ class ChatService:
             source_memory_ids=[memory.id for memory in relevant_memories],
             knowledge_card_ids=[card.id for card in relevant_knowledge_cards],
             safety_category=safety_classification.category,
+            is_private_mode=not memory_enabled_for_session,
         )
 
         if memory_enabled_for_session and safety_classification.category != "D":
@@ -120,6 +129,21 @@ class ChatService:
             except UpstreamServiceError as exc:
                 logger.warning("Memory extraction skipped: %s", exc)
 
+        proactive_insight_reply = None
+        if memory_enabled_for_session:
+            try:
+                proactive_insight_reply = self.insight_service.maybe_get_proactive_insight_reply(
+                    self.memory_service.user_id,
+                    message,
+                    history,
+                    session_key,
+                    safety_classification.category,
+                )
+            except UpstreamServiceError as exc:
+                logger.warning("Insight generation skipped: %s", exc)
+        if proactive_insight_reply is not None:
+            reply = f"{reply}\n\n{proactive_insight_reply}"
+
         debug = None
         if include_debug and self.debug_metadata_allowed:
             debug = ChatDebugMetadata(
@@ -134,6 +158,62 @@ class ChatService:
             )
 
         return ChatResponse(reply=reply, debug=debug)
+
+    def _handle_insight_intent(
+        self,
+        message: str,
+        history: list[HistoryMessage],
+        session_id: str | None,
+    ) -> str | None:
+        intent = self.insight_service.detect_intent(message)
+        user_id = self.memory_service.user_id
+        current = self.insight_service.get_latest_actionable_insight()
+
+        if intent.intent_type == "manual_insights":
+            return self.insight_service.get_manual_insights(user_id, message, history, session_id)
+        if intent.intent_type == "disable_proactive_insights":
+            self.insight_service.update_preferences(
+                InsightPreferenceUpdateRequest(proactive_insights_enabled=False)
+            )
+            return "Okay — I will stop giving proactive insights."
+        if intent.intent_type == "enable_proactive_insights":
+            self.insight_service.update_preferences(
+                InsightPreferenceUpdateRequest(proactive_insights_enabled=True)
+            )
+            return "Okay — proactive insights are back on."
+        if current is None:
+            if intent.intent_type == "explain_insight":
+                explanation = self.memory_transparency_service.explain_last_advice(session_id)
+                if explanation.startswith("I do not have enough recent context"):
+                    return "I do not have a recent insight to explain right now."
+                return explanation
+            if intent.intent_type in {
+                "dismiss_insight",
+                "archive_insight",
+                "save_insight_as_pattern",
+                "reject_insight",
+                "experiment_helped",
+                "experiment_failed",
+            }:
+                return "I do not have a recent insight to apply that to."
+            return None
+        if intent.intent_type == "dismiss_insight":
+            self.insight_service.dismiss_insight(user_id, current.id)
+            return "Okay — I dismissed that insight and will not keep resurfacing it."
+        if intent.intent_type == "archive_insight":
+            self.insight_service.archive_insight(user_id, current.id)
+            return "Okay — I forgot that insight."
+        if intent.intent_type == "save_insight_as_pattern":
+            return self.insight_service.save_insight_as_pattern(user_id, current.id)
+        if intent.intent_type == "reject_insight":
+            return self.insight_service.handle_rejected_insight(user_id, current.id)
+        if intent.intent_type == "experiment_helped":
+            return self.insight_service.record_experiment_feedback(user_id, current.id, "helped")
+        if intent.intent_type == "experiment_failed":
+            return self.insight_service.record_experiment_feedback(user_id, current.id, "did_not_help")
+        if intent.intent_type == "explain_insight":
+            return self.insight_service.explain_insight(user_id, current.id)
+        return None
 
     def _handle_memory_intent(
         self,

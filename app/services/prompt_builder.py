@@ -1,6 +1,8 @@
 from app.models.chat import HistoryMessage
+from app.models.insight import InsightRecord
 from app.models.knowledge import KnowledgeCard
 from app.models.memory import MemoryRecord
+from app.models.memory_control import AdviceTraceRecord
 from app.models.safety import SafetyClassification
 
 PHASE_1_PROFILE = """
@@ -175,6 +177,61 @@ def format_memories_for_prompt(memories: list[MemoryRecord]) -> str:
         if items:
             sections.append(f"{memory_type}:\n" + "\n".join(items))
     return "\n\n".join(sections)
+
+
+def build_insight_generator_instructions(max_candidates: int) -> str:
+    return f"""
+You generate lightweight sleep pattern insights for a personal sleep assistant.
+
+Only use evidence the user voluntarily shared through chat history and saved memory.
+Do not ask for daily tracking, daily reports, diaries, or check-ins.
+Generate at most {max_candidates} insights, and prefer one useful insight over many weak ones.
+Keep the fixed wake-up goal of 09:00 central when suggesting experiments.
+Distinguish facts from hypotheses clearly.
+Use confidence levels high, medium, or low.
+High = repeated explicit evidence or user confirmation.
+Medium = several related signals.
+Low = weak evidence and should be phrased cautiously.
+Do not create insights from red-flag situations as casual lifestyle patterns.
+Do not diagnose medical conditions.
+Do not recommend medication, supplements, melatonin, stimulants, or dosages.
+Suggested experiments must be small, reversible, practical, and not require daily reports.
+If evidence is too weak, set should_create_insight=false.
+""".strip()
+
+
+def build_insight_generator_input(
+    user_message: str,
+    history: list[HistoryMessage],
+    recent_traces: list[AdviceTraceRecord],
+    memories: list[MemoryRecord],
+    relevant_knowledge_cards: list[KnowledgeCard],
+    last_insight_at: str | None,
+) -> str:
+    history_lines = [f"- {item.role}: {item.content}" for item in history[-6:]]
+    trace_lines = [
+        f"- user: {trace.user_message}\n  assistant: {trace.assistant_reply}\n  safety: {trace.safety_category}"
+        for trace in recent_traces[:8]
+    ]
+    return "\n\n".join(
+        [
+            f"Last proactive insight shown at: {last_insight_at or 'never'}",
+            f"Current request:\n{user_message or 'No explicit insight request; evaluate whether a proactive insight is justified.'}",
+            "Recent conversation history:\n" + ("\n".join(history_lines) if history_lines else "None"),
+            "Recent non-private traces:\n" + ("\n".join(trace_lines) if trace_lines else "None"),
+            "Saved memories:\n" + format_memories_for_prompt(memories),
+            "Relevant knowledge cards:\n" + format_knowledge_cards_for_prompt(relevant_knowledge_cards),
+        ]
+    )
+
+
+def format_insights_for_prompt(insights: list[InsightRecord]) -> str:
+    if not insights:
+        return "No saved insights."
+    return "\n".join(
+        f"- [{insight.id}] {insight.title}: {insight.summary} (confidence={insight.confidence}, status={insight.status})"
+        for insight in insights
+    )
 
 
 def format_knowledge_cards_for_prompt(cards: list[KnowledgeCard]) -> str:
