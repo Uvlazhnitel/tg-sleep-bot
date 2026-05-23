@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.database import initialize_database
 from app.core.exceptions import MemoryNotFoundError, MissingConfigurationError, UpstreamServiceError
 from app.repositories.memory_repository import MemoryRepository
+from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ async def lifespan(_: FastAPI):
         repository=MemoryRepository(settings.database_path),
         user_id=settings.default_user_id,
     ).ensure_seed_memories()
+    KnowledgeService(settings.knowledge_cards_path).list_knowledge_cards()
     yield
 
 

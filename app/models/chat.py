@@ -19,6 +19,7 @@ class HistoryMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: list[HistoryMessage] = Field(default_factory=list)
+    include_debug: bool = False
 
     @field_validator("message")
     @classmethod
@@ -29,8 +30,14 @@ class ChatRequest(BaseModel):
         return cleaned
 
 
+class ChatDebugMetadata(BaseModel):
+    memory_ids: list[str] = Field(default_factory=list)
+    knowledge_card_ids: list[str] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     reply: str
+    debug: ChatDebugMetadata | None = None
 
 
 class HealthResponse(BaseModel):

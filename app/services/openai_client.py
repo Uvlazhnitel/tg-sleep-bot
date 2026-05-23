@@ -6,6 +6,7 @@ from app.core.config import Settings
 from app.core.exceptions import UpstreamServiceError
 from app.models.chat import HistoryMessage
 from app.models.extractor import MemoryExtractionResult
+from app.models.knowledge import KnowledgeCard
 from app.models.memory import MemoryRecord
 from app.services.prompt_builder import (
     build_assistant_instructions,
@@ -26,8 +27,12 @@ class OpenAIResponseService:
         message: str,
         history: list[HistoryMessage],
         relevant_memories: list[MemoryRecord],
+        relevant_knowledge_cards: list[KnowledgeCard],
     ) -> str:
-        instructions = build_assistant_instructions(relevant_memories)
+        instructions = build_assistant_instructions(
+            relevant_memories,
+            relevant_knowledge_cards,
+        )
         input_items = build_phase1_input(message=message, history=history)
 
         try:

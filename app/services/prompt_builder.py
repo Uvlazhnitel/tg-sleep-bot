@@ -1,4 +1,5 @@
 from app.models.chat import HistoryMessage
+from app.models.knowledge import KnowledgeCard
 from app.models.memory import MemoryRecord
 
 PHASE_1_PROFILE = """
@@ -44,8 +45,12 @@ def build_phase1_instructions() -> str:
     return "\n\n".join(f"{name}:\n{content}" for name, content in sections.items())
 
 
-def build_assistant_instructions(relevant_memories: list[MemoryRecord]) -> str:
+def build_assistant_instructions(
+    relevant_memories: list[MemoryRecord],
+    relevant_knowledge_cards: list[KnowledgeCard],
+) -> str:
     memory_block = format_memories_for_prompt(relevant_memories)
+    knowledge_block = format_knowledge_cards_for_prompt(relevant_knowledge_cards)
     dynamic_rules = """
 Use memories only when relevant to the user's current situation.
 Do not mention memory unless it helps the answer.
@@ -53,13 +58,30 @@ If a memory is uncertain or low-confidence, phrase it as a possibility rather th
 Do not overfit to weak or stale memories.
 Keep the advice practical and tied to the user's wake-up goal.
 """.strip()
+    knowledge_rules = """
+Use the knowledge cards as grounding for practical sleep advice.
+Do not invent scientific claims beyond the cards.
+Do not quote or expose source URLs unless the user explicitly asks.
+Lead with practical advice, then brief reasoning when useful.
+If the cards are not enough to support a strong claim, say you are not fully sure rather than filling in unsupported detail.
+Recommend professional help clearly when red-flag situations are relevant.
+When useful, naturally cover best action now, why it helps, and what to avoid, but do not force a rigid template every time.
+""".strip()
+    wake_goal_framing = """
+Treat the current fixed_goal memory as the user's active wake-up target.
+If no fixed_goal memory is available, default to helping the user wake up at 09:00.
+Keep recommendations aligned with protecting or gradually restoring a stable target wake time.
+""".strip()
 
     sections = {
         "Role": "You are the assistant for a personal sleep-support chatbot prototype.",
         "Fixed Assistant Rules": PHASE_1_BEHAVIOR_RULES,
         "Style Rules": PHASE_1_STYLE_RULES,
+        "Wake Goal Framing": wake_goal_framing,
         "Memory Usage Rules": dynamic_rules,
         "Relevant User Memories": memory_block,
+        "Knowledge Card Usage Rules": knowledge_rules,
+        "Relevant Knowledge Cards": knowledge_block,
         "Safety Boundaries": (
             "You are not a doctor. Do not diagnose conditions, recommend prescription medications, "
             "or claim certainty where general sleep advice is more appropriate."
@@ -129,4 +151,25 @@ def format_memories_for_prompt(memories: list[MemoryRecord]) -> str:
         items = grouped.get(memory_type)
         if items:
             sections.append(f"{memory_type}:\n" + "\n".join(items))
+    return "\n\n".join(sections)
+
+
+def format_knowledge_cards_for_prompt(cards: list[KnowledgeCard]) -> str:
+    if not cards:
+        return "No relevant knowledge cards were retrieved."
+
+    sections: list[str] = []
+    for card in cards:
+        sections.append(
+            "\n".join(
+                [
+                    f"- [{card.id}] topic={card.topic} title={card.title}",
+                    f"  practical_rule: {card.practical_rule}",
+                    f"  when_to_use: {card.when_to_use}",
+                    f"  avoid_advising: {card.avoid_advising}",
+                    f"  evidence_level: {card.evidence_level}",
+                    f"  source_name: {card.source_name}",
+                ]
+            )
+        )
     return "\n\n".join(sections)

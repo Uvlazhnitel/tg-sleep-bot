@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 from fastapi.testclient import TestClient
 
 from app.api.routes import get_chat_service
@@ -9,17 +7,33 @@ from app.models.extractor import MemoryExtractionResult
 from app.models.memory import MemoryCreateRequest
 from app.repositories.memory_repository import MemoryRepository
 from app.services.chat_service import ChatService
+from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
 
 
 class StubOpenAIService:
-    def __init__(self, reply: str = "Test reply", extraction: MemoryExtractionResult | None = None):
+    def __init__(
+        self,
+        reply: str = "Test reply",
+        extraction: MemoryExtractionResult | None = None,
+    ):
         self.reply = reply
-        self.extraction = extraction or MemoryExtractionResult(memory_updates=[], ignored=[])
+        self.extraction = extraction or MemoryExtractionResult(
+            memory_updates=[],
+            ignored=[],
+        )
         self.last_memories = []
+        self.last_knowledge_cards = []
 
-    def generate_assistant_reply(self, message, history, relevant_memories):
+    def generate_assistant_reply(
+        self,
+        message,
+        history,
+        relevant_memories,
+        relevant_knowledge_cards,
+    ):
         self.last_memories = relevant_memories
+        self.last_knowledge_cards = relevant_knowledge_cards
         return self.reply
 
     def extract_memory_updates(self, user_message, assistant_reply, relevant_memories):
@@ -33,15 +47,29 @@ class FailingExtractorOpenAIService(StubOpenAIService):
         raise UpstreamServiceError("extractor failed")
 
 
-def build_client(monkeypatch, tmp_path, chat_service=None):
+def build_client(monkeypatch, tmp_path, chat_service=None, *, app_env="production"):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.db"))
+    monkeypatch.setenv("APP_ENV", app_env)
+    monkeypatch.setenv("KNOWLEDGE_CARDS_PATH", "app/data/knowledge_cards.json")
     get_settings.cache_clear()
 
     app = create_app()
     if chat_service is not None:
         app.dependency_overrides[get_chat_service] = lambda: chat_service
     return app
+
+
+def build_chat_service(tmp_path, openai_service, *, debug_metadata_allowed=False):
+    repository = MemoryRepository(str(tmp_path / "service.db"))
+    memory_service = MemoryService(repository, "default_user")
+    memory_service.ensure_seed_memories()
+    return ChatService(
+        memory_service=memory_service,
+        knowledge_service=KnowledgeService("app/data/knowledge_cards.json"),
+        openai_service=openai_service,
+        debug_metadata_allowed=debug_metadata_allowed,
+    )
 
 
 def test_health_check(monkeypatch, tmp_path):
@@ -114,14 +142,15 @@ def test_chat_update_goal_intent(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert "08:30" in response.json()["reply"]
-    assert any(memory["type"] == "fixed_goal" and "08:30" in memory["content"] for memory in memories)
+    assert any(
+        memory["type"] == "fixed_goal" and "08:30" in memory["content"]
+        for memory in memories
+    )
 
 
-def test_chat_includes_relevant_memory_context(monkeypatch, tmp_path):
-    repository = MemoryRepository(str(tmp_path / "service.db"))
-    memory_service = MemoryService(repository, "default_user")
-    memory_service.ensure_seed_memories()
-    memory_service.create_memory(
+def test_chat_includes_relevant_memory_and_knowledge_context(monkeypatch, tmp_path):
+    chat_service = build_chat_service(tmp_path, StubOpenAIService("Try morning light again."))
+    chat_service.memory_service.create_memory(
         MemoryCreateRequest(
             type="worked_before",
             content="Morning light helped the user get out of bed.",
@@ -129,24 +158,25 @@ def test_chat_includes_relevant_memory_context(monkeypatch, tmp_path):
             source="manual",
         )
     )
-    openai_service = StubOpenAIService("Try morning light again.")
-    chat_service = ChatService(memory_service=memory_service, openai_service=openai_service)
+    openai_service = chat_service.openai_service
 
     app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
     with TestClient(app) as client:
-        response = client.post("/chat", json={"message": "I am struggling to get out of bed."})
+        response = client.post(
+            "/chat",
+            json={"message": "I keep snoozing my alarms and feel groggy every morning."},
+        )
 
     assert response.status_code == 200
     assert any("Morning light helped" in memory.content for memory in openai_service.last_memories)
+    assert any(card.topic == "snoozing" for card in openai_service.last_knowledge_cards)
+    assert any(card.topic == "morning_light" for card in openai_service.last_knowledge_cards)
 
 
 def test_chat_returns_reply_when_memory_extraction_fails(monkeypatch, tmp_path):
-    repository = MemoryRepository(str(tmp_path / "service.db"))
-    memory_service = MemoryService(repository, "default_user")
-    memory_service.ensure_seed_memories()
-    chat_service = ChatService(
-        memory_service=memory_service,
-        openai_service=FailingExtractorOpenAIService("Still keep 09:00 tomorrow."),
+    chat_service = build_chat_service(
+        tmp_path,
+        FailingExtractorOpenAIService("Still keep 09:00 tomorrow."),
     )
 
     app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
@@ -155,3 +185,55 @@ def test_chat_returns_reply_when_memory_extraction_fails(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json()["reply"] == "Still keep 09:00 tomorrow."
+
+
+def test_normal_chat_response_hides_debug_metadata(monkeypatch, tmp_path):
+    chat_service = build_chat_service(
+        tmp_path,
+        StubOpenAIService("Keep 09:00 tomorrow and use morning light."),
+        debug_metadata_allowed=True,
+    )
+
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service, app_env="development")
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "I snoozed again."})
+
+    assert response.status_code == 200
+    assert "debug" not in response.json()
+
+
+def test_dev_chat_response_can_include_debug_metadata(monkeypatch, tmp_path):
+    chat_service = build_chat_service(
+        tmp_path,
+        StubOpenAIService("Keep 09:00 tomorrow and use morning light."),
+        debug_metadata_allowed=True,
+    )
+
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service, app_env="development")
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "I snoozed again.", "include_debug": True},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["debug"]["memory_ids"]
+    assert response.json()["debug"]["knowledge_card_ids"]
+
+
+def test_production_chat_response_suppresses_debug_metadata(monkeypatch, tmp_path):
+    chat_service = build_chat_service(
+        tmp_path,
+        StubOpenAIService("Keep 09:00 tomorrow and use morning light."),
+        debug_metadata_allowed=False,
+    )
+
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service, app_env="production")
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message": "I snoozed again.", "include_debug": True},
+        )
+
+    assert response.status_code == 200
+    assert "debug" not in response.json()

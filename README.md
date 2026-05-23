@@ -4,11 +4,12 @@ Personal sleep assistant chatbot focused on helping a single user wake up every 
 
 ## Current status
 
-This repository now includes a Phase 2 backend prototype:
+This repository now includes a Phase 3 backend prototype:
 
 - Python 3.13 + FastAPI HTTP service
 - `POST /chat` endpoint backed by the OpenAI Responses API
 - persistent typed memory stored in SQLite
+- curated local knowledge cards for practical sleep guidance
 - fixed user goal plus editable preferences and patterns
 - no Telegram adapter yet
 
@@ -18,7 +19,8 @@ The assistant is designed to be:
 - practical, concise, and non-judgmental
 - science-based and explicitly non-medical
 - transparent and editable in how it uses memory
-- ready for later knowledge cards and deeper personalization layers
+- grounded by a small curated sleep knowledge base
+- ready for later deeper personalization layers
 
 ## Project structure
 
@@ -52,6 +54,9 @@ export OPENAI_API_KEY="your_api_key_here"
 export OPENAI_MODEL="gpt-4.1-mini"
 export OPENAI_EXTRACTOR_MODEL="gpt-4.1-mini"
 export DATABASE_PATH="sleep_assistant.db"
+export APP_ENV="development"
+export ENABLE_DEBUG_METADATA="false"
+export KNOWLEDGE_CARDS_PATH="app/data/knowledge_cards.json"
 ```
 
 You can also copy `.env.example` as a reference:
@@ -85,6 +90,19 @@ Example response:
   "status": "ok"
 }
 ```
+
+Optional development-only debug metadata:
+
+```bash
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "I keep snoozing my alarms.",
+    "include_debug": true
+  }'
+```
+
+Debug metadata is only returned when debug mode is enabled by environment configuration.
 
 ### Chat
 
@@ -170,25 +188,68 @@ The user can also manage memory explicitly:
 - say `Forget that I often snooze alarms.`
 - say `Change my wake-up goal to 08:30.`
 
+## What knowledge cards are
+
+Knowledge cards are a small curated local sleep knowledge base. Each card captures one practical sleep principle with:
+
+- a topic and title
+- a bounded scientific claim
+- a practical rule
+- when to use it
+- what to avoid advising
+- evidence level and source
+
+The bot uses 3 to 6 relevant cards per response when possible. Retrieval is local and heuristic:
+
+- keyword matching against the user message
+- tag and topic matching
+- light relevance boosting from stored user memories
+- forced inclusion of the professional-help card for red-flag messages
+
+Cards guide the advice, but the assistant still answers naturally in chat instead of sounding like an academic article.
+
+### How to add or edit a knowledge card
+
+Knowledge cards live in [app/data/knowledge_cards.json](/Users/uvlazhnitel/Documents/tg-sleep-bot/app/data/knowledge_cards.json).
+
+When editing cards:
+
+- keep claims practical and bounded
+- use one reputable source per card
+- avoid invented or overly specific causal claims
+- avoid diagnosis-style wording
+- keep `practical_rule` and `avoid_advising` concrete
+
+Acceptable source families for this phase:
+
+- American Academy of Sleep Medicine / Sleep Education
+- CDC
+- NHS
+- Mayo Clinic
+- National Sleep Foundation
+- Sleep Foundation
+
 ## Privacy notes
 
 - Memory is stored locally in SQLite at `DATABASE_PATH`
 - The bot stores only a narrow set of sleep-related durable memories
 - The user can list and archive memories through the API
 - Memory extraction is model-assisted, but the model does not write directly to the database
+- Knowledge cards are static curated application content stored locally in the repository
 
-## Phase 2 limitations
+## Phase 3 limitations
 
-Phase 2 intentionally does not include:
+Phase 3 intentionally does not include:
 
 - Telegram integration
 - vector search or embeddings
-- full scientific knowledge cards yet
+- dynamic web search
 - daily sleep reports or check-ins
 - authentication or rate limiting
 - perfect memory extraction
+- automatic medical diagnosis
 
-The bot can view and delete memories, but it still does not diagnose or treat medical conditions.
+Scientific advice quality depends on the quality and coverage of the curated cards. The knowledge base is intentionally small for maintainability.
 
 Conversation history is still client-supplied per request and is only used as a short context window.
 
@@ -206,6 +267,8 @@ Manual smoke scenarios to try:
 - tonight planning question
 - snoozing-alarm question
 - repeated early waking question
+- caffeine timing question
+- concerning symptoms that should surface professional-help guidance
 - morning light helped before and becomes `worked_before`
 - many alarms did not help and becomes `did_not_work`
 - one-off late bedtime gets ignored as memory
