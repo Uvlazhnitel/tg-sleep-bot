@@ -5,8 +5,15 @@ from typing import Iterable
 from pydantic import ValidationError
 
 from app.models.extractor import MemoryExtractionResult, MemoryUpdateProposal
-from app.models.memory import MemoryCreateRequest, MemoryRecord, MemoryType, MemoryUpdateRequest
+from app.models.memory import (
+    MemoryCreateRequest,
+    MemoryFeedback,
+    MemoryRecord,
+    MemoryType,
+    MemoryUpdateRequest,
+)
 from app.repositories.memory_repository import MemoryRepository
+from app.services.personalization_service import PersonalizationService
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +41,7 @@ class MemoryService:
     def __init__(self, repository: MemoryRepository, user_id: str) -> None:
         self.repository = repository
         self.user_id = user_id
+        self.personalization = PersonalizationService(repository, user_id)
 
     def ensure_seed_memories(self) -> None:
         for memory_type, content, confidence, source in INITIAL_MEMORIES:
@@ -51,7 +59,8 @@ class MemoryService:
         return self.repository.list_memories(self.user_id, include_archived=include_archived)
 
     def get_relevant_memories(self, message: str) -> list[MemoryRecord]:
-        return self.repository.get_relevant_memories(self.user_id, message)
+        memories = self.repository.get_relevant_memories(self.user_id, message)
+        return self.personalization.rank_memories(memories, message)
 
     def mark_memories_used(self, memories: Iterable[MemoryRecord]) -> None:
         self.repository.touch_memories(self.user_id, [memory.id for memory in memories])
@@ -68,6 +77,12 @@ class MemoryService:
             content=request.content,
             confidence=request.confidence,
             source=request.source,
+            evidence_count=request.evidence_count,
+            positive_count=request.positive_count,
+            negative_count=request.negative_count,
+            last_confirmed_at=request.last_confirmed_at,
+            related_memory_id=request.related_memory_id,
+            relation_type=request.relation_type,
         )
 
     def update_memory(self, memory_id: str, request: MemoryUpdateRequest) -> MemoryRecord:
@@ -77,6 +92,12 @@ class MemoryService:
             content=request.content,
             confidence=request.confidence,
             source=request.source,
+            evidence_count=request.evidence_count,
+            positive_count=request.positive_count,
+            negative_count=request.negative_count,
+            last_confirmed_at=request.last_confirmed_at,
+            related_memory_id=request.related_memory_id,
+            relation_type=request.relation_type,
             is_archived=request.is_archived,
         )
 
@@ -128,9 +149,9 @@ class MemoryService:
         if not memories:
             return "I do not have any saved memories about you yet."
 
-        grouped: dict[str, list[str]] = {}
+        grouped: dict[str, list[MemoryRecord]] = {}
         for memory in memories:
-            grouped.setdefault(memory.type, []).append(memory.content)
+            grouped.setdefault(memory.type, []).append(memory)
 
         lines = ["Here is what I currently remember about you:"]
         for memory_type in [
@@ -145,7 +166,10 @@ class MemoryService:
             if not items:
                 continue
             lines.append(f"{memory_type}:")
-            lines.extend(f"- {item}" for item in items)
+            lines.extend(
+                f"- {item.content} (confidence: {item.confidence:.2f}, evidence: {item.evidence_count})"
+                for item in items
+            )
         return "\n".join(lines)
 
     def validate_extraction_result(
@@ -205,8 +229,14 @@ class MemoryService:
             return MemoryExtractionResult(memory_updates=[], ignored=[])
 
     def apply_memory_updates(self, extraction: MemoryExtractionResult) -> list[MemoryRecord]:
+        existing_memories = self.list_memories(include_archived=True)
+        proposals = self.personalization.merge_duplicate_memories(
+            extraction.memory_updates,
+            existing_memories,
+        )
+        proposals = self.personalization.detect_contradictions(existing_memories, proposals)
         applied: list[MemoryRecord] = []
-        for proposal in extraction.memory_updates:
+        for proposal in proposals:
             if proposal.action == "none":
                 continue
 
@@ -221,6 +251,8 @@ class MemoryService:
                         content=proposal.content,
                         confidence=proposal.confidence,
                         source="memory_extractor",
+                        related_memory_id=proposal.related_memory_id,
+                        relation_type=proposal.relation_type,
                     )
                 )
                 applied.append(memory)
@@ -233,6 +265,8 @@ class MemoryService:
                         content=proposal.content,
                         confidence=proposal.confidence,
                         source="memory_extractor",
+                        related_memory_id=proposal.related_memory_id,
+                        relation_type=proposal.relation_type,
                     ),
                 )
                 applied.append(memory)
@@ -243,6 +277,18 @@ class MemoryService:
                 applied.append(memory)
 
         return applied
+
+    def get_personalization_context(self, message: str) -> str:
+        memories = self.repository.list_memories(self.user_id, include_archived=False)
+        context = self.personalization.get_personalization_context(message, memories)
+        return self.personalization.build_compact_context_text(context)
+
+    def apply_feedback(self, memory_id: str, feedback: MemoryFeedback) -> MemoryRecord:
+        memory = self.repository.get_memory(memory_id, self.user_id)
+        return self.personalization.update_memory_confidence(memory, feedback)
+
+    def record_intervention_feedback(self, intervention: str, result: str) -> MemoryRecord:
+        return self.personalization.record_intervention_result(intervention, result)
 
     @staticmethod
     def _looks_temporary(content: str) -> bool:

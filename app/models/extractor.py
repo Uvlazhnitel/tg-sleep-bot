@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.models.memory import MemoryType
+from app.models.memory import MemoryType, RelationType
 
 
 class MemoryUpdateProposal(BaseModel):
@@ -12,6 +12,8 @@ class MemoryUpdateProposal(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     reason: str
     target_memory_id: str | None = None
+    related_memory_id: str | None = None
+    relation_type: RelationType | None = None
 
 
 class IgnoredMemoryCandidate(BaseModel):

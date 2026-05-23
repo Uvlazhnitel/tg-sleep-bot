@@ -10,6 +10,8 @@ MemoryType = Literal[
     "worked_before",
     "did_not_work",
 ]
+RelationType = Literal["supports", "contradicts", "updates"]
+MemoryFeedback = Literal["confirmed", "wrong", "not_relevant", "helped", "did_not_help"]
 
 
 class MemoryRecord(BaseModel):
@@ -22,6 +24,12 @@ class MemoryRecord(BaseModel):
     created_at: str
     updated_at: str
     last_used_at: str | None = None
+    evidence_count: int = Field(default=1, ge=0)
+    positive_count: int = Field(default=0, ge=0)
+    negative_count: int = Field(default=0, ge=0)
+    last_confirmed_at: str | None = None
+    related_memory_id: str | None = None
+    relation_type: RelationType | None = None
     is_archived: bool
 
 
@@ -30,6 +38,12 @@ class MemoryCreateRequest(BaseModel):
     content: str
     confidence: float = Field(ge=0.0, le=1.0)
     source: str = "manual"
+    evidence_count: int = Field(default=1, ge=0)
+    positive_count: int = Field(default=0, ge=0)
+    negative_count: int = Field(default=0, ge=0)
+    last_confirmed_at: str | None = None
+    related_memory_id: str | None = None
+    relation_type: RelationType | None = None
 
     @field_validator("content")
     @classmethod
@@ -44,6 +58,12 @@ class MemoryUpdateRequest(BaseModel):
     content: str | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     source: str | None = None
+    evidence_count: int | None = Field(default=None, ge=0)
+    positive_count: int | None = Field(default=None, ge=0)
+    negative_count: int | None = Field(default=None, ge=0)
+    last_confirmed_at: str | None = None
+    related_memory_id: str | None = None
+    relation_type: RelationType | None = None
     is_archived: bool | None = None
 
     @field_validator("content")
@@ -59,3 +79,8 @@ class MemoryUpdateRequest(BaseModel):
 
 class MemorySummaryResponse(BaseModel):
     memories: list[MemoryRecord]
+
+
+class MemoryFeedbackRequest(BaseModel):
+    memory_id: str
+    feedback: MemoryFeedback

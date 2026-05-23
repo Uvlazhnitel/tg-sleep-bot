@@ -4,12 +4,13 @@ Personal sleep assistant chatbot focused on helping a single user wake up every 
 
 ## Current status
 
-This repository now includes a Phase 3 backend prototype:
+This repository now includes a Phase 4 backend prototype:
 
 - Python 3.13 + FastAPI HTTP service
 - `POST /chat` endpoint backed by the OpenAI Responses API
 - persistent typed memory stored in SQLite
 - curated local knowledge cards for practical sleep guidance
+- lightweight personalization that adapts to what helped or did not help
 - fixed user goal plus editable preferences and patterns
 - no Telegram adapter yet
 
@@ -20,7 +21,8 @@ The assistant is designed to be:
 - science-based and explicitly non-medical
 - transparent and editable in how it uses memory
 - grounded by a small curated sleep knowledge base
-- ready for later deeper personalization layers
+- personalized without requiring daily reports
+- ready for later deeper analytics or integrations
 
 ## Project structure
 
@@ -161,9 +163,20 @@ curl -X POST http://127.0.0.1:8000/memory \
   }'
 ```
 
+Give direct feedback on a memory:
+
+```bash
+curl -X POST http://127.0.0.1:8000/memory/feedback \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memory_id":"<memory_id>",
+    "feedback":"confirmed"
+  }'
+```
+
 ## How memory works
 
-Phase 2 stores only durable, useful information such as:
+The bot stores only durable, useful information such as:
 
 - fixed goals
 - preferences
@@ -171,6 +184,14 @@ Phase 2 stores only durable, useful information such as:
 - worked-before strategies
 - did-not-work strategies
 - cautious hypotheses
+
+Phase 4 adds simple support strength signals to memories:
+
+- `confidence`
+- `evidence_count`
+- `positive_count`
+- `negative_count`
+- `last_confirmed_at`
 
 It does not try to save every message. One-off events like a single late bedtime should usually stay out of long-term memory.
 
@@ -187,6 +208,37 @@ The user can also manage memory explicitly:
 - ask `What do you remember about me?`
 - say `Forget that I often snooze alarms.`
 - say `Change my wake-up goal to 08:30.`
+- say `That helped yesterday.`
+- say `That didn't work for me.`
+- say `Actually, that's wrong.`
+- say `Remember that I usually need a slow morning.`
+
+## How personalization works
+
+Phase 4 does not track every day or require reports. Instead, it personalizes advice by combining:
+
+1. the current situation
+2. the user's 09:00 wake-up goal
+3. relevant durable memories
+4. what worked before
+5. what did not work
+6. cautious hypotheses
+7. curated knowledge cards
+
+Confidence levels are simple and deterministic:
+
+- high confidence: explicit user statements or repeated confirmed memories
+- medium confidence: partially confirmed patterns or repeated helpful interventions
+- low confidence: tentative hypotheses that should not be treated as facts
+
+Examples of feedback the bot can use:
+
+- `That helped yesterday.`
+- `That didn't work for me.`
+- `Actually, coffee doesn't affect my sleep.`
+- `Remember that I usually need a slow morning.`
+
+The assistant uses a compact personalization context instead of dumping all memories into the prompt.
 
 ## What knowledge cards are
 
@@ -234,12 +286,13 @@ Acceptable source families for this phase:
 - Memory is stored locally in SQLite at `DATABASE_PATH`
 - The bot stores only a narrow set of sleep-related durable memories
 - The user can list and archive memories through the API
+- The user can edit memories and give explicit memory feedback through the API
 - Memory extraction is model-assisted, but the model does not write directly to the database
 - Knowledge cards are static curated application content stored locally in the repository
 
-## Phase 3 limitations
+## Phase 4 limitations
 
-Phase 3 intentionally does not include:
+Phase 4 intentionally does not include:
 
 - Telegram integration
 - vector search or embeddings
@@ -248,8 +301,10 @@ Phase 3 intentionally does not include:
 - authentication or rate limiting
 - perfect memory extraction
 - automatic medical diagnosis
+- advanced analytics dashboards
+- wearable integrations
 
-Scientific advice quality depends on the quality and coverage of the curated cards. The knowledge base is intentionally small for maintainability.
+Pattern detection is still simple and may be imperfect. Low-confidence memories are treated as hypotheses, and the user can correct or delete memories at any time.
 
 Conversation history is still client-supplied per request and is only used as a short context window.
 

@@ -84,3 +84,17 @@ def test_mark_memories_used_updates_last_used_at(tmp_path):
     refreshed = service.list_memories(include_archived=False)
     touched = next(item for item in refreshed if item.id == memory.id)
     assert touched.last_used_at is not None
+
+
+def test_that_helped_updates_worked_before_memory(tmp_path):
+    service = build_service(tmp_path)
+    memory = service.record_intervention_feedback("Morning light helped after waking.", "helped")
+    assert memory.type == "worked_before"
+    assert memory.positive_count >= 1
+
+
+def test_that_did_not_work_updates_did_not_work_memory(tmp_path):
+    service = build_service(tmp_path)
+    memory = service.record_intervention_feedback("Setting many alarms.", "did_not_help")
+    assert memory.type == "did_not_work"
+    assert memory.negative_count >= 1

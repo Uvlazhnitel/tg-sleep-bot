@@ -28,9 +28,10 @@ class OpenAIResponseService:
         history: list[HistoryMessage],
         relevant_memories: list[MemoryRecord],
         relevant_knowledge_cards: list[KnowledgeCard],
+        personalization_context: str,
     ) -> str:
         instructions = build_assistant_instructions(
-            relevant_memories,
+            personalization_context,
             relevant_knowledge_cards,
         )
         input_items = build_phase1_input(message=message, history=history)

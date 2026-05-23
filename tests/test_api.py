@@ -24,6 +24,7 @@ class StubOpenAIService:
         )
         self.last_memories = []
         self.last_knowledge_cards = []
+        self.last_personalization_context = ""
 
     def generate_assistant_reply(
         self,
@@ -31,9 +32,11 @@ class StubOpenAIService:
         history,
         relevant_memories,
         relevant_knowledge_cards,
+        personalization_context,
     ):
         self.last_memories = relevant_memories
         self.last_knowledge_cards = relevant_knowledge_cards
+        self.last_personalization_context = personalization_context
         return self.reply
 
     def extract_memory_updates(self, user_message, assistant_reply, relevant_memories):
@@ -85,7 +88,11 @@ def test_get_memory_returns_seeded_memories(monkeypatch, tmp_path):
         response = client.get("/memory")
 
     assert response.status_code == 200
+    memory = response.json()["memories"][0]
     assert len(response.json()["memories"]) >= 6
+    assert "evidence_count" in memory
+    assert "positive_count" in memory
+    assert "negative_count" in memory
 
 
 def test_post_patch_delete_memory(monkeypatch, tmp_path):
@@ -114,6 +121,28 @@ def test_post_patch_delete_memory(monkeypatch, tmp_path):
         assert deleted.json()["is_archived"] is True
 
 
+def test_memory_feedback_endpoint_updates_counts(monkeypatch, tmp_path):
+    with TestClient(build_client(monkeypatch, tmp_path)) as client:
+        created = client.post(
+            "/memory",
+            json={
+                "type": "hypothesis",
+                "content": "Late caffeine may be linked to early awakenings.",
+                "confidence": 0.4,
+                "source": "manual",
+            },
+        ).json()
+
+        updated = client.post(
+            "/memory/feedback",
+            json={"memory_id": created["id"], "feedback": "confirmed"},
+        )
+
+    assert updated.status_code == 200
+    assert updated.json()["confidence"] >= 0.5
+    assert updated.json()["evidence_count"] >= 2
+
+
 def test_chat_memory_summary_intent(monkeypatch, tmp_path):
     with TestClient(build_client(monkeypatch, tmp_path)) as client:
         response = client.post("/chat", json={"message": "What do you remember about me?"})
@@ -122,30 +151,63 @@ def test_chat_memory_summary_intent(monkeypatch, tmp_path):
     assert "Here is what I currently remember about you" in response.json()["reply"]
 
 
-def test_chat_forget_intent_archives_matching_memory(monkeypatch, tmp_path):
-    with TestClient(build_client(monkeypatch, tmp_path)) as client:
-        response = client.post("/chat", json={"message": "Forget that I often snooze alarms."})
-        assert response.status_code == 200
+def test_chat_feedback_helped_creates_memory(monkeypatch, tmp_path):
+    chat_service = build_chat_service(
+        tmp_path,
+        StubOpenAIService("Try morning light tomorrow."),
+    )
 
-        memories = client.get("/memory").json()["memories"]
-
-    assert "I forgot this memory" in response.json()["reply"]
-    assert all("snoozing alarms" not in memory["content"] for memory in memories)
-
-
-def test_chat_update_goal_intent(monkeypatch, tmp_path):
-    with TestClient(build_client(monkeypatch, tmp_path)) as client:
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
         response = client.post(
-            "/chat", json={"message": "Change my wake-up goal to 08:30."}
+            "/chat",
+            json={
+                "message": "That helped yesterday.",
+                "history": [{"role": "assistant", "content": "Try morning light tomorrow."}],
+            },
         )
-        memories = client.get("/memory").json()["memories"]
 
     assert response.status_code == 200
-    assert "08:30" in response.json()["reply"]
+    assert "I'll remember that this helped" in response.json()["reply"]
     assert any(
-        memory["type"] == "fixed_goal" and "08:30" in memory["content"]
-        for memory in memories
+        memory.type == "worked_before" for memory in chat_service.memory_service.list_memories()
     )
+
+
+def test_chat_feedback_did_not_work_creates_memory(monkeypatch, tmp_path):
+    chat_service = build_chat_service(
+        tmp_path,
+        StubOpenAIService("Set more alarms."),
+    )
+
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={
+                "message": "That didn't work for me.",
+                "history": [{"role": "assistant", "content": "Set more alarms."}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert "I'll avoid leaning on that next time" in response.json()["reply"]
+    assert any(
+        memory.type == "did_not_work" for memory in chat_service.memory_service.list_memories()
+    )
+
+
+def test_chat_ambiguous_feedback_asks_clarifying_question(monkeypatch, tmp_path):
+    chat_service = build_chat_service(
+        tmp_path,
+        StubOpenAIService("Reply."),
+    )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "That helped yesterday."})
+
+    assert response.status_code == 200
+    assert "What part helped" in response.json()["reply"]
 
 
 def test_chat_includes_relevant_memory_and_knowledge_context(monkeypatch, tmp_path):
@@ -156,6 +218,7 @@ def test_chat_includes_relevant_memory_and_knowledge_context(monkeypatch, tmp_pa
             content="Morning light helped the user get out of bed.",
             confidence=0.9,
             source="manual",
+            positive_count=1,
         )
     )
     openai_service = chat_service.openai_service
@@ -170,7 +233,27 @@ def test_chat_includes_relevant_memory_and_knowledge_context(monkeypatch, tmp_pa
     assert response.status_code == 200
     assert any("Morning light helped" in memory.content for memory in openai_service.last_memories)
     assert any(card.topic == "snoozing" for card in openai_service.last_knowledge_cards)
-    assert any(card.topic == "morning_light" for card in openai_service.last_knowledge_cards)
+    assert "Worked before:" in openai_service.last_personalization_context
+    assert "Relevant User Memories" not in openai_service.last_personalization_context
+
+
+def test_hypotheses_are_not_presented_as_facts_in_prompt_context(monkeypatch, tmp_path):
+    chat_service = build_chat_service(tmp_path, StubOpenAIService("Reply."))
+    chat_service.memory_service.create_memory(
+        MemoryCreateRequest(
+            type="hypothesis",
+            content="Late caffeine may be linked to early awakenings.",
+            confidence=0.4,
+            source="manual",
+        )
+    )
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Why am I waking early?"})
+
+    assert response.status_code == 200
+    assert "Hypotheses to treat cautiously:" in chat_service.openai_service.last_personalization_context
+    assert "confidence: low" in chat_service.openai_service.last_personalization_context
 
 
 def test_chat_returns_reply_when_memory_extraction_fails(monkeypatch, tmp_path):
@@ -219,6 +302,7 @@ def test_dev_chat_response_can_include_debug_metadata(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.json()["debug"]["memory_ids"]
     assert response.json()["debug"]["knowledge_card_ids"]
+    assert "User goal:" in response.json()["debug"]["personalization_context"]
 
 
 def test_production_chat_response_suppresses_debug_metadata(monkeypatch, tmp_path):

@@ -4,6 +4,7 @@ from app.core.config import get_settings
 from app.models.chat import ChatRequest, ChatResponse, HealthResponse
 from app.models.memory import (
     MemoryCreateRequest,
+    MemoryFeedbackRequest,
     MemoryRecord,
     MemorySummaryResponse,
     MemoryUpdateRequest,
@@ -90,3 +91,11 @@ def delete_memory(
     memory_service: MemoryService = Depends(get_memory_service),
 ) -> MemoryRecord:
     return memory_service.archive_memory(memory_id)
+
+
+@router.post("/memory/feedback", response_model=MemoryRecord)
+def feedback_memory(
+    payload: MemoryFeedbackRequest,
+    memory_service: MemoryService = Depends(get_memory_service),
+) -> MemoryRecord:
+    return memory_service.apply_feedback(payload.memory_id, payload.feedback)

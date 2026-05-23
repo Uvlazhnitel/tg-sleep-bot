@@ -46,17 +46,21 @@ def build_phase1_instructions() -> str:
 
 
 def build_assistant_instructions(
-    relevant_memories: list[MemoryRecord],
+    personalization_context: str,
     relevant_knowledge_cards: list[KnowledgeCard],
 ) -> str:
-    memory_block = format_memories_for_prompt(relevant_memories)
     knowledge_block = format_knowledge_cards_for_prompt(relevant_knowledge_cards)
     dynamic_rules = """
-Use memories only when relevant to the user's current situation.
+Use personalization only when relevant to the user's current situation.
 Do not mention memory unless it helps the answer.
 If a memory is uncertain or low-confidence, phrase it as a possibility rather than a fact.
 Do not overfit to weak or stale memories.
 Keep the advice practical and tied to the user's wake-up goal.
+Prefer strategies that worked before when they are still safe and relevant.
+Avoid repeating advice that did not work before unless there is a clear reason.
+If memory conflicts with safety or knowledge-card guidance, prioritize safety first, then knowledge, then preference.
+If useful, mention previous user context briefly without sounding invasive.
+Never ask for daily reports.
 """.strip()
     knowledge_rules = """
 Use the knowledge cards as grounding for practical sleep advice.
@@ -78,8 +82,8 @@ Keep recommendations aligned with protecting or gradually restoring a stable tar
         "Fixed Assistant Rules": PHASE_1_BEHAVIOR_RULES,
         "Style Rules": PHASE_1_STYLE_RULES,
         "Wake Goal Framing": wake_goal_framing,
-        "Memory Usage Rules": dynamic_rules,
-        "Relevant User Memories": memory_block,
+        "Personalization Usage Rules": dynamic_rules,
+        "Personalization Context": personalization_context,
         "Knowledge Card Usage Rules": knowledge_rules,
         "Relevant Knowledge Cards": knowledge_block,
         "Safety Boundaries": (

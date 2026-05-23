@@ -57,6 +57,12 @@ class MemoryRepository:
         content: str,
         confidence: float,
         source: str,
+        evidence_count: int = 1,
+        positive_count: int = 0,
+        negative_count: int = 0,
+        last_confirmed_at: str | None = None,
+        related_memory_id: str | None = None,
+        relation_type: str | None = None,
     ) -> MemoryRecord:
         now = utc_now_iso()
         memory_id = str(uuid.uuid4())
@@ -65,9 +71,11 @@ class MemoryRepository:
                 """
                 INSERT INTO memories (
                     id, user_id, type, content, confidence, source,
-                    created_at, updated_at, last_used_at, is_archived
+                    created_at, updated_at, last_used_at, evidence_count,
+                    positive_count, negative_count, last_confirmed_at,
+                    related_memory_id, relation_type, is_archived
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                 """,
                 (
                     memory_id,
@@ -79,6 +87,12 @@ class MemoryRepository:
                     now,
                     now,
                     None,
+                    evidence_count,
+                    positive_count,
+                    negative_count,
+                    last_confirmed_at,
+                    related_memory_id,
+                    relation_type,
                 ),
             )
             connection.commit()
@@ -94,6 +108,12 @@ class MemoryRepository:
         source: str | None = None,
         is_archived: bool | None = None,
         last_used_at: str | None = None,
+        evidence_count: int | None = None,
+        positive_count: int | None = None,
+        negative_count: int | None = None,
+        last_confirmed_at: str | None = None,
+        related_memory_id: str | None = None,
+        relation_type: str | None = None,
     ) -> MemoryRecord:
         current = self.get_memory(memory_id, user_id)
         with get_connection(self.database_path) as connection:
@@ -101,7 +121,9 @@ class MemoryRepository:
                 """
                 UPDATE memories
                 SET content = ?, confidence = ?, source = ?, updated_at = ?,
-                    last_used_at = ?, is_archived = ?
+                    last_used_at = ?, evidence_count = ?, positive_count = ?,
+                    negative_count = ?, last_confirmed_at = ?, related_memory_id = ?,
+                    relation_type = ?, is_archived = ?
                 WHERE id = ? AND user_id = ?
                 """,
                 (
@@ -110,6 +132,20 @@ class MemoryRepository:
                     source if source is not None else current.source,
                     utc_now_iso(),
                     last_used_at if last_used_at is not None else current.last_used_at,
+                    evidence_count if evidence_count is not None else current.evidence_count,
+                    positive_count if positive_count is not None else current.positive_count,
+                    negative_count if negative_count is not None else current.negative_count,
+                    (
+                        last_confirmed_at
+                        if last_confirmed_at is not None
+                        else current.last_confirmed_at
+                    ),
+                    (
+                        related_memory_id
+                        if related_memory_id is not None
+                        else current.related_memory_id
+                    ),
+                    relation_type if relation_type is not None else current.relation_type,
                     int(is_archived if is_archived is not None else current.is_archived),
                     memory_id,
                     user_id,
@@ -194,5 +230,11 @@ class MemoryRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             last_used_at=row["last_used_at"],
+            evidence_count=row["evidence_count"],
+            positive_count=row["positive_count"],
+            negative_count=row["negative_count"],
+            last_confirmed_at=row["last_confirmed_at"],
+            related_memory_id=row["related_memory_id"],
+            relation_type=row["relation_type"],
             is_archived=bool(row["is_archived"]),
         )
