@@ -283,19 +283,19 @@ class MemoryTransparencyService:
         session_key = self.normalize_session_id(session_id)
         pending = self.get_pending_confirmation(session_key)
         if pending is None:
-            return "There is no pending memory request to resolve right now."
+            return "Сейчас нет ожидающего подтверждения для сохранения в память."
 
         self.pending_confirmation_repository.delete_pending_confirmation(
             self.memory_service.user_id,
             session_key,
         )
         if not accept:
-            return "Okay — I will not save that to memory."
+            return "Хорошо — я не буду это сохранять в память."
 
         extraction = MemoryExtractionResult.model_validate_json(pending.memory_updates_json)
         validated = self.memory_service.validate_extraction_result(extraction)
         self.memory_service.apply_memory_updates(validated)
-        return "Okay — I saved that for future sleep advice."
+        return "Хорошо — я сохраню это для будущих советов по сну."
 
     def should_ask_before_saving(self, proposal: MemoryUpdateProposal) -> bool:
         return proposal.should_ask_user_before_saving or proposal.sensitivity == "sensitive"
@@ -457,8 +457,9 @@ class MemoryTransparencyService:
     def _build_sensitive_confirmation_prompt(
         proposals: list[MemoryUpdateProposal],
     ) -> str:
-        lines = ["Do you want me to remember this for future sleep advice?"]
+        lines = ["Хочешь, чтобы я запомнил это для будущих советов по сну?"]
         for proposal in proposals:
             if proposal.content:
                 lines.append(f"- {proposal.content}")
+        lines.append("Ответь: да или нет.")
         return "\n".join(lines)

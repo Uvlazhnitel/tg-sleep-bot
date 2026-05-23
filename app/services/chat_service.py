@@ -465,7 +465,18 @@ class ChatService:
             return None
 
         lowered = message.strip().lower()
-        if lowered in {"yes", "yes remember that", "yes save that", "save it", "remember it"}:
+        if lowered in {
+            "yes",
+            "yes remember that",
+            "yes save that",
+            "save it",
+            "remember it",
+            "да",
+            "да запомни",
+            "да сохрани",
+            "сохрани",
+            "запомни",
+        }:
             return self.memory_transparency_service.resolve_pending_confirmation(
                 session_id,
                 accept=True,
@@ -476,6 +487,10 @@ class ChatService:
             "don't save that",
             "dont save that",
             "no thanks",
+            "нет",
+            "не сохраняй",
+            "нет не сохраняй",
+            "не надо",
         }:
             return self.memory_transparency_service.resolve_pending_confirmation(
                 session_id,

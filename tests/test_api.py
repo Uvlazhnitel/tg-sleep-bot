@@ -64,12 +64,14 @@ class StubOpenAIService:
         safety_classification,
         feature_context="",
         voice_mode=False,
+        response_language=None,
     ):
         self.last_memories = relevant_memories
         self.last_knowledge_cards = relevant_knowledge_cards
         self.last_personalization_context = personalization_context
         self.last_feature_context = feature_context
         self.last_voice_mode = voice_mode
+        self.last_response_language = response_language
         self.last_safety_classification = safety_classification
         return self.reply
 
@@ -1145,15 +1147,16 @@ def test_sensitive_memory_requires_confirmation_before_saving(monkeypatch, tmp_p
         second = client.post(
             "/chat",
             json={
-                "message": "yes",
+                "message": "да",
                 "session_id": "confirm-1",
             },
         )
 
     assert first.status_code == 200
-    assert "Do you want me to remember this for future sleep advice?" in first.json()["reply"]
+    assert "Хочешь, чтобы я запомнил это для будущих советов по сну?" in first.json()["reply"]
+    assert "Ответь: да или нет." in first.json()["reply"]
     assert second.status_code == 200
-    assert "saved that for future sleep advice" in second.json()["reply"]
+    assert "Хорошо — я сохраню это для будущих советов по сну." in second.json()["reply"]
 
 
 def test_normal_chat_response_hides_debug_metadata(monkeypatch, tmp_path):
