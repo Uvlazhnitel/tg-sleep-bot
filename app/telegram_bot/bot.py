@@ -3,6 +3,7 @@ import logging
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from app.core.config import get_settings
+from app.services.audio_transcription_service import AudioTranscriptionService
 from app.services.chat_runtime import generate_chat_reply
 from app.telegram_bot.handlers import TelegramBotHandlers
 
@@ -40,11 +41,13 @@ def build_application() -> Application:
 
     handlers = TelegramBotHandlers(
         generate_reply=build_reply_callback(),
+        transcribe_voice=AudioTranscriptionService(settings).transcribe_file,
         allowed_user_id=settings.telegram_allowed_user_id,
     )
     application = Application.builder().token(settings.telegram_bot_token).build()
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("help", handlers.help))
+    application.add_handler(MessageHandler(filters.VOICE, handlers.handle_voice))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_text)
     )

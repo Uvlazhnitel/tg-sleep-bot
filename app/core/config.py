@@ -17,6 +17,7 @@ class Settings:
     openai_api_key: str | None
     openai_model: str
     openai_extractor_model: str
+    openai_transcription_model: str
     openai_max_output_tokens: int
     database_path: str
     app_env: str
@@ -35,6 +36,9 @@ class Settings:
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             openai_model=model,
             openai_extractor_model=os.getenv("OPENAI_EXTRACTOR_MODEL", model),
+            openai_transcription_model=os.getenv(
+                "OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe"
+            ),
             openai_max_output_tokens=350,
             database_path=os.getenv("DATABASE_PATH", "sleep_assistant.db"),
             app_env=os.getenv("APP_ENV", "production"),
