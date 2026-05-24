@@ -11,6 +11,7 @@ from app.services.memory_service import MemoryService
 from app.services.memory_transparency_service import MemoryTransparencyService
 from app.services.integration_service import CalendarService, HealthDataService
 from app.services.insight_service import InsightService
+from app.services.memory_extraction_policy import MemoryExtractionPolicy
 from app.services.openai_client import OpenAIResponseService
 from app.services.reminder_service import ReminderService
 from app.services.safety_classifier import SafetyClassifierService
@@ -33,6 +34,7 @@ class ChatService:
         calendar_service: CalendarService,
         health_data_service: HealthDataService,
         debug_metadata_allowed: bool = False,
+        memory_extraction_policy: MemoryExtractionPolicy | None = None,
     ) -> None:
         self.memory_service = memory_service
         self.knowledge_service = knowledge_service
@@ -45,6 +47,7 @@ class ChatService:
         self.calendar_service = calendar_service
         self.health_data_service = health_data_service
         self.debug_metadata_allowed = debug_metadata_allowed
+        self.memory_extraction_policy = memory_extraction_policy or MemoryExtractionPolicy()
 
     def generate_reply(
         self,
@@ -131,7 +134,14 @@ class ChatService:
             is_private_mode=not memory_enabled_for_session,
         )
 
-        if memory_enabled_for_session and safety_classification.category != "D":
+        if (
+            memory_enabled_for_session
+            and self.memory_extraction_policy.should_run_extraction(
+                message,
+                history,
+                safety_classification.category,
+            )
+        ):
             try:
                 extraction = self.openai_service.extract_memory_updates(
                     user_message=message,

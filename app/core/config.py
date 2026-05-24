@@ -26,6 +26,7 @@ class Settings:
     default_timezone: str
     telegram_bot_token: str | None
     telegram_mode: str
+    telegram_allowed_user_id: int | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -45,6 +46,11 @@ class Settings:
             default_timezone=os.getenv("DEFAULT_TIMEZONE", "UTC"),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
             telegram_mode=os.getenv("TELEGRAM_MODE", "polling"),
+            telegram_allowed_user_id=(
+                int(os.getenv("TELEGRAM_ALLOWED_USER_ID"))
+                if os.getenv("TELEGRAM_ALLOWED_USER_ID")
+                else None
+            ),
         )
 
     def require_openai_api_key(self) -> None:

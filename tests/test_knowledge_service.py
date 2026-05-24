@@ -27,8 +27,10 @@ def test_knowledge_cards_load_from_json():
     service = KnowledgeService("app/data/knowledge_cards.json")
     cards = service.list_knowledge_cards()
 
-    assert len(cards) >= 22
+    assert len(cards) >= 24
     assert any(card.topic == "stable_wake_time" for card in cards)
+    assert any(card.topic == "sleep_inertia" for card in cards)
+    assert any(card.topic == "sleep_environment" for card in cards)
 
 
 def test_get_relevant_cards_by_keyword_and_tag():
@@ -41,6 +43,7 @@ def test_get_relevant_cards_by_keyword_and_tag():
     topics = [card.topic for card in cards]
     assert "snoozing" in topics
     assert "morning_light" in topics
+    assert "sleep_inertia" in topics
 
 
 def test_irrelevant_cards_are_not_prioritized_when_avoidable():
@@ -65,6 +68,17 @@ def test_red_flag_card_is_retrieved_for_concerning_message():
 
     assert any(card.topic == "when_to_seek_professional_help" for card in cards)
     assert any(card.topic == "possible_sleep_apnea_red_flags" for card in cards)
+
+
+def test_medication_or_supplement_question_retrieves_boundary_card():
+    service = KnowledgeService("app/data/knowledge_cards.json")
+    cards = service.get_relevant_knowledge_cards(
+        "Can I use melatonin and is this medicine affecting my sleep?",
+        [],
+    )
+
+    topics = [card.topic for card in cards[:4]]
+    assert "medication_sleep_concerns" in topics
 
 
 def test_invalid_knowledge_card_shape_fails_validation(tmp_path):

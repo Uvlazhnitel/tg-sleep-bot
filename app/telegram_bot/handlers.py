@@ -28,6 +28,7 @@ HELP_TEXT = (
 )
 
 ERROR_TEXT = "Sorry, I couldn’t process that right now. Try again in a moment."
+ACCESS_DENIED_TEXT = "Извини, этот бот доступен только владельцу."
 
 
 class TelegramHistoryStore:
@@ -51,17 +52,27 @@ class TelegramBotHandlers:
         self,
         generate_reply: Callable[[str, str, list[HistoryMessage], str], str],
         history_store: TelegramHistoryStore | None = None,
+        allowed_user_id: int | None = None,
     ) -> None:
         self.generate_reply = generate_reply
         self.history_store = history_store or TelegramHistoryStore()
+        self.allowed_user_id = allowed_user_id
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
+        if not self._is_allowed(update):
+            if update.message is not None:
+                await update.message.reply_text(ACCESS_DENIED_TEXT)
+            return
         if update.message is not None:
             await update.message.reply_text(START_TEXT)
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
+        if not self._is_allowed(update):
+            if update.message is not None:
+                await update.message.reply_text(ACCESS_DENIED_TEXT)
+            return
         if update.message is not None:
             await update.message.reply_text(HELP_TEXT)
 
@@ -70,6 +81,9 @@ class TelegramBotHandlers:
         user = update.effective_user
         chat = update.effective_chat
         if message is None or user is None or chat is None or not message.text:
+            return
+        if not self._is_allowed(update):
+            await message.reply_text(ACCESS_DENIED_TEXT)
             return
 
         internal_user_id = telegram_user_to_internal_user_id(user.id)
@@ -91,3 +105,9 @@ class TelegramBotHandlers:
 
         self.history_store.append_turn(internal_user_id, message.text, reply)
         await message.reply_text(reply)
+
+    def _is_allowed(self, update: Update) -> bool:
+        if self.allowed_user_id is None:
+            return True
+        user = update.effective_user
+        return user is not None and user.id == self.allowed_user_id

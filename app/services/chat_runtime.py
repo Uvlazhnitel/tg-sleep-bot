@@ -15,6 +15,7 @@ from app.services.insight_service import InsightService
 from app.services.integration_service import CalendarService, HealthDataService
 from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
+from app.services.memory_extraction_policy import MemoryExtractionPolicy
 from app.services.memory_transparency_service import MemoryTransparencyService
 from app.services.openai_client import OpenAIResponseService
 from app.services.reminder_service import ReminderService
@@ -83,6 +84,7 @@ def build_chat_service_for_user(user_id: str) -> ChatService:
             user_id=user_id,
         ),
         debug_metadata_allowed=settings.debug_metadata_allowed,
+        memory_extraction_policy=MemoryExtractionPolicy(),
     )
 
 

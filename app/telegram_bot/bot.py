@@ -38,7 +38,10 @@ def build_application() -> Application:
             "Webhook support can be added later via POST /telegram/webhook."
         )
 
-    handlers = TelegramBotHandlers(generate_reply=build_reply_callback())
+    handlers = TelegramBotHandlers(
+        generate_reply=build_reply_callback(),
+        allowed_user_id=settings.telegram_allowed_user_id,
+    )
     application = Application.builder().token(settings.telegram_bot_token).build()
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("help", handlers.help))

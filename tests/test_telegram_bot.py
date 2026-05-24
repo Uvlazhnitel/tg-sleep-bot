@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from app.telegram_bot.bot import build_reply_callback
 from app.telegram_bot.handlers import (
+    ACCESS_DENIED_TEXT,
     ERROR_TEXT,
     HELP_TEXT,
     START_TEXT,
@@ -68,6 +69,27 @@ def test_help_returns_expected_text():
     run(handlers.help(update, build_context()))
 
     assert message.replies == [HELP_TEXT]
+
+
+def test_unauthorized_user_is_blocked_before_chat_logic():
+    calls: list[tuple[str, str, list, str]] = []
+
+    def fake_generate_reply(user_id: str, message: str, history: list, session_id: str) -> str:
+        calls.append((user_id, message, history, session_id))
+        return "unused"
+
+    handlers = TelegramBotHandlers(
+        generate_reply=fake_generate_reply,
+        allowed_user_id=417523636,
+    )
+    update, message = build_update("I keep pressing snooze.", user_id=999)
+    context = build_context()
+
+    run(handlers.handle_text(update, context))
+
+    assert calls == []
+    assert message.replies == [ACCESS_DENIED_TEXT]
+    assert context.bot.actions == []
 
 
 def test_free_form_handler_calls_chat_service():

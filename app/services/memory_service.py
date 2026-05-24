@@ -39,6 +39,13 @@ INITIAL_MEMORIES: tuple[tuple[MemoryType, str, float, str], ...] = (
 
 
 class MemoryService:
+    _CREATE_ALWAYS_ALLOWED_TYPES: tuple[MemoryType, ...] = (
+        "preference",
+        "worked_before",
+        "did_not_work",
+        "fixed_goal",
+    )
+
     def __init__(self, repository: MemoryRepository, user_id: str) -> None:
         self.repository = repository
         self.user_id = user_id
@@ -242,6 +249,19 @@ class MemoryService:
                 )
                 continue
 
+            if (
+                proposal.action == "create"
+                and proposal.type not in self._CREATE_ALWAYS_ALLOWED_TYPES
+                and not self._is_strong_create_candidate(proposal.type, proposal.content, proposal.confidence)
+            ):
+                ignored.append(
+                    {
+                        "content": proposal.content,
+                        "reason": "Too weak or speculative to create as durable memory.",
+                    }
+                )
+                continue
+
             if proposal.action in {"update", "archive"} and proposal.target_memory_id not in current_ids:
                 ignored.append(
                     {
@@ -373,7 +393,24 @@ class MemoryService:
     @staticmethod
     def _looks_temporary(content: str) -> bool:
         lowered = content.lower()
-        return any(token in lowered for token in ("yesterday", "last night", "today", "tonight"))
+        temporary_tokens = (
+            "yesterday",
+            "last night",
+            "today",
+            "tonight",
+            "this morning",
+            "this afternoon",
+            "this evening",
+            "earlier today",
+            "вчера",
+            "сегодня",
+            "этой ночью",
+            "сегодня утром",
+            "сегодня вечером",
+        )
+        if not any(token in lowered for token in temporary_tokens):
+            return False
+        return not MemoryService._has_repeat_marker(lowered)
 
     @staticmethod
     def _looks_diagnostic(content: str) -> bool:
@@ -405,3 +442,37 @@ class MemoryService:
             "dangerously sleepy while driving",
         )
         return any(term in lowered for term in blocked_terms)
+
+    @staticmethod
+    def _is_strong_create_candidate(
+        memory_type: MemoryType,
+        content: str,
+        confidence: float,
+    ) -> bool:
+        lowered = content.lower()
+        if memory_type == "pattern":
+            return MemoryService._has_repeat_marker(lowered)
+        if memory_type == "hypothesis":
+            return confidence >= 0.75 and MemoryService._has_repeat_marker(lowered)
+        return True
+
+    @staticmethod
+    def _has_repeat_marker(lowered: str) -> bool:
+        markers = (
+            "usually",
+            "often",
+            "always",
+            "every time",
+            "frequently",
+            "regularly",
+            "keeps ",
+            "often struggles",
+            "sometimes wakes",
+            "часто",
+            "обычно",
+            "всегда",
+            "каждый раз",
+            "регулярно",
+            "постоянно",
+        )
+        return any(marker in lowered for marker in markers)

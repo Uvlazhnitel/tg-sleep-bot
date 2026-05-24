@@ -23,6 +23,7 @@ from app.services.chat_service import ChatService
 from app.services.integration_service import CalendarService, HealthDataService
 from app.services.knowledge_service import KnowledgeService
 from app.services.insight_service import InsightService
+from app.services.memory_extraction_policy import MemoryExtractionPolicy
 from app.services.memory_service import MemoryService
 from app.services.memory_transparency_service import MemoryTransparencyService
 from app.services.reminder_service import ReminderService
@@ -53,6 +54,7 @@ class StubOpenAIService:
         self.last_feature_context = ""
         self.last_voice_mode = False
         self.last_safety_classification = None
+        self.extract_calls = 0
 
     def generate_assistant_reply(
         self,
@@ -76,6 +78,7 @@ class StubOpenAIService:
         return self.reply
 
     def extract_memory_updates(self, user_message, assistant_reply, relevant_memories):
+        self.extract_calls += 1
         return self.extraction
 
     def generate_insight_candidates(
@@ -149,6 +152,7 @@ def build_chat_service(tmp_path, openai_service, *, debug_metadata_allowed=False
         calendar_service=CalendarService(integration_repository, "default_user"),
         health_data_service=HealthDataService(integration_repository, "default_user"),
         debug_metadata_allowed=debug_metadata_allowed,
+        memory_extraction_policy=MemoryExtractionPolicy(),
     )
 
 
@@ -1157,6 +1161,126 @@ def test_sensitive_memory_requires_confirmation_before_saving(monkeypatch, tmp_p
     assert "Ответь: да или нет." in first.json()["reply"]
     assert second.status_code == 200
     assert "Хорошо — я сохраню это для будущих советов по сну." in second.json()["reply"]
+
+
+def test_memory_extraction_policy_skips_acknowledgements():
+    policy = MemoryExtractionPolicy()
+
+    assert policy.should_run_extraction("спасибо", [], "A") is False
+    assert policy.should_run_extraction("ok", [], "A") is False
+
+
+def test_memory_extraction_policy_allows_repeat_pattern_and_preference_signals():
+    policy = MemoryExtractionPolicy()
+
+    assert policy.should_run_extraction("I usually go to bed around 2 AM.", [], "A") is True
+    assert policy.should_run_extraction("мне помогает яркий свет утром", [], "A") is True
+
+
+def test_chat_skips_extraction_for_one_off_update(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Keep 09:00 tomorrow.",
+        extraction=MemoryExtractionResult(
+            memory_updates=[
+                {
+                    "action": "create",
+                    "type": "pattern",
+                    "content": "User went to bed at 3 AM last night.",
+                    "confidence": 0.8,
+                    "reason": "Candidate pattern.",
+                }
+            ],
+            ignored=[],
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "I went to bed at 3 last night."})
+
+    assert response.status_code == 200
+    assert openai_service.extract_calls == 0
+
+
+def test_chat_runs_extraction_for_stable_routine_signal(monkeypatch, tmp_path):
+    openai_service = StubOpenAIService(
+        "Let's stabilize this gradually.",
+        extraction=MemoryExtractionResult(
+            memory_updates=[
+                {
+                    "action": "create",
+                    "type": "pattern",
+                    "content": "User usually falls asleep around 2 AM.",
+                    "confidence": 0.85,
+                    "reason": "Repeated routine.",
+                }
+            ],
+            ignored=[],
+        ),
+    )
+    chat_service = build_chat_service(tmp_path, openai_service)
+    app = build_client(monkeypatch, tmp_path, chat_service=chat_service)
+
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "I usually fall asleep around 2 AM."})
+
+    assert response.status_code == 200
+    assert openai_service.extract_calls == 1
+    assert any(
+        "usually falls asleep around 2 am" in memory.content.lower()
+        for memory in chat_service.memory_service.list_memories(include_archived=True)
+    )
+
+
+def test_weak_hypothesis_create_is_dropped_by_validation(tmp_path):
+    service = MemoryService(MemoryRepository(str(tmp_path / "api.db")), "default_user")
+    service.ensure_seed_memories()
+    extraction = MemoryExtractionResult(
+        memory_updates=[
+            {
+                "action": "create",
+                "type": "hypothesis",
+                "content": "User may have trouble sleeping.",
+                "confidence": 0.6,
+                "reason": "Weak guess.",
+            }
+        ],
+        ignored=[],
+    )
+
+    validated = service.validate_extraction_result(extraction)
+
+    assert validated.memory_updates == []
+    assert any(
+        item.reason == "Too weak or speculative to create as durable memory."
+        for item in validated.ignored
+    )
+
+
+def test_one_off_bedtime_fact_is_rejected_as_temporary(tmp_path):
+    service = MemoryService(MemoryRepository(str(tmp_path / "api.db")), "default_user")
+    service.ensure_seed_memories()
+    extraction = MemoryExtractionResult(
+        memory_updates=[
+            {
+                "action": "create",
+                "type": "pattern",
+                "content": "User went to bed at 3 AM last night.",
+                "confidence": 0.9,
+                "reason": "Single report.",
+            }
+        ],
+        ignored=[],
+    )
+
+    validated = service.validate_extraction_result(extraction)
+
+    assert validated.memory_updates == []
+    assert any(
+        item.reason == "Temporary event, not durable memory."
+        for item in validated.ignored
+    )
 
 
 def test_normal_chat_response_hides_debug_metadata(monkeypatch, tmp_path):
